@@ -17,6 +17,7 @@ import {
   fetchDailyRevenue,
 } from '../services/meta.service';
 import { DailyRevenue } from '../../revenue/entities/daily-revenue.entity';
+import { CronService } from '../services/cron.service';
 
 /** Safety cap for profileIds arrays to avoid unbounded IN clauses */
 const MAX_PROFILE_IDS = 50;
@@ -35,6 +36,7 @@ export class AnalyticsController {
     @InjectRepository(DailyRevenue)
     private dailyRevenueRepo: Repository<DailyRevenue>,
     @InjectQueue('social-sync-queue') private syncQueue: Queue,
+    private readonly cronService: CronService,
   ) {}
 
   @Get('profiles/list')
@@ -44,6 +46,16 @@ export class AnalyticsController {
       select: ['profileId', 'name', 'platform', 'syncState', 'lastSyncError'],
     });
     return res.status(200).json(profiles);
+  }
+
+  @Post('sync')
+  async triggerGlobalManualSync(@Res() res: Response) {
+    try {
+      await this.cronService.handleDailySync();
+      return res.status(200).json({ success: true, message: 'Sync triggered successfully.' });
+    } catch (error: any) {
+      return res.status(500).json({ error: error.message });
+    }
   }
 
   @Get('demographics/:profileId')
