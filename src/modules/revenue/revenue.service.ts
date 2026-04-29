@@ -19,7 +19,20 @@ export class RevenueService {
     }
 
     async updateMappingTeam(id: number, team: string | null) {
-        await this.mappingRepo.update(id, { team: team || 'Unassigned' });
+        const normalizedTeam = (typeof team === 'string' && team.trim()) ? team.trim() : 'Unassigned';
+        
+        await this.mappingRepo.update(id, { team: normalizedTeam });
+
+        const row = await this.mappingRepo.findOneBy({ id });
+        if (row) {
+            await this.mappingRepo
+                .createQueryBuilder()
+                .update()
+                .set({ team: normalizedTeam })
+                .where('"pageName" = :pageName', { pageName: row.pageName })
+                .execute();
+        }
+
         return this.getMappings();
     }
 
