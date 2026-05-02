@@ -10,6 +10,7 @@ import { UtmAnalyticsModule } from './modules/utm-analytics/utm-analytics.module
 import { AuthModule } from './modules/auth/auth.module';
 import { RevenueModule } from './modules/revenue/revenue.module';
 import { EmailReportsModule } from './modules/email-reports/email-reports.module';
+import { ReportSportsMappingsModule } from './modules/report-sports-mappings/report-sports-mappings.module';
 
 @Module({
   imports: [
@@ -43,6 +44,7 @@ import { EmailReportsModule } from './modules/email-reports/email-reports.module
     BigQueryModule,
     RevenueModule,
     EmailReportsModule,
+    ReportSportsMappingsModule,
   ],
   controllers: [],
   providers: [],
