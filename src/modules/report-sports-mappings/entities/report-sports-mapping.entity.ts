@@ -11,7 +11,7 @@ export class ReportSportsMapping {
   @Column()
   pageName: string;
 
-  @Column({ nullable: true })
+  @Column({ type: 'varchar', nullable: true })
   sport: string | null; // e.g., "Cricket", "Football", "Hockey"
 
   @CreateDateColumn()
