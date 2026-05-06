@@ -523,22 +523,21 @@ export class AnalyticsController {
       }
 
       // --- CURRENT PERIOD: Post aggregation at DB level (GROUP BY date) ---
+      // NOTE: FB post metrics are NOT added to totals because the snapshot-level
+      // page_impressions_unique and page_post_engagements already include all
+      // post activity. Only IG post metrics are added (IG page/post insights are
+      // separate data sources).
       const currentPostAgg: {
         postDate: string;
-        engagements: string;
-        fbImpressions: string;
+        igEngagements: string;
         igImpressions: string;
         igVideoViews: string;
       }[] = await this.postRepo
         .createQueryBuilder('p')
         .select(`TO_CHAR(p."postedAt", 'YYYY-MM-DD')`, 'postDate')
         .addSelect(
-          'COALESCE(SUM(p.likes + p.comments + p.shares + p.clicks), 0)',
-          'engagements',
-        )
-        .addSelect(
-          `COALESCE(SUM(CASE WHEN p.platform = 'facebook' THEN p.reach ELSE 0 END), 0)`,
-          'fbImpressions',
+          `COALESCE(SUM(CASE WHEN p.platform = 'instagram' THEN p.likes + p.comments + p.shares + p.clicks ELSE 0 END), 0)`,
+          'igEngagements',
         )
         .addSelect(
           `COALESCE(SUM(CASE WHEN p.platform = 'instagram' THEN p.views + p.reach ELSE 0 END), 0)`,
@@ -558,16 +557,14 @@ export class AnalyticsController {
       const postAggByDate: Record<
         string,
         {
-          engagements: number;
-          fbImpressions: number;
+          igEngagements: number;
           igImpressions: number;
           igVideoViews: number;
         }
       > = {};
       for (const row of currentPostAgg) {
         postAggByDate[row.postDate] = {
-          engagements: Number(row.engagements),
-          fbImpressions: Number(row.fbImpressions),
+          igEngagements: Number(row.igEngagements),
           igImpressions: Number(row.igImpressions),
           igVideoViews: Number(row.igVideoViews),
         };
@@ -601,14 +598,13 @@ export class AnalyticsController {
         const snapEngagements = Number(snap?.engagements || 0);
         const snapVideoViews = Number(snap?.videoViews || 0);
 
-        const postEngagements = post?.engagements || 0;
-        const postFbImpressions = post?.fbImpressions || 0;
+        // Only add IG post metrics (FB snapshot already includes post activity)
+        const postIgEngagements = post?.igEngagements || 0;
         const postIgImpressions = post?.igImpressions || 0;
         const postIgVideoViews = post?.igVideoViews || 0;
 
-        const totalImpressions =
-          snapImpressions + postFbImpressions + postIgImpressions;
-        const totalEngagements = snapEngagements + postEngagements;
+        const totalImpressions = snapImpressions + postIgImpressions;
+        const totalEngagements = snapEngagements + postIgEngagements;
         const totalVideoViews = snapVideoViews + postIgVideoViews;
 
         timeSeries.push({
@@ -745,7 +741,7 @@ export class AnalyticsController {
         )
         .addSelect('COALESCE(SUM(s."totalEngagement"), 0)', 'engagements')
         .addSelect(
-          `COALESCE(SUM(GREATEST(s."totalImpressions", s."totalReach")), 0) + COALESCE(SUM(CASE WHEN s.platform = 'facebook' THEN s."videoViews" ELSE 0 END), 0)`,
+          `COALESCE(SUM(GREATEST(s."totalImpressions", s."totalReach")), 0)`,
           'impressions',
         )
         .addSelect(
@@ -770,19 +766,14 @@ export class AnalyticsController {
           .getRawOne();
 
       const prevPostAgg: {
-        engagements: string;
-        fbImpressions: string;
+        igEngagements: string;
         igImpressions: string;
         igVideoViews: string;
       } | undefined = await this.postRepo
         .createQueryBuilder('p')
         .select(
-          'COALESCE(SUM(p.likes + p.comments + p.shares + p.clicks), 0)',
-          'engagements',
-        )
-        .addSelect(
-          `COALESCE(SUM(CASE WHEN p.platform = 'facebook' THEN p.reach ELSE 0 END), 0)`,
-          'fbImpressions',
+          `COALESCE(SUM(CASE WHEN p.platform = 'instagram' THEN p.likes + p.comments + p.shares + p.clicks ELSE 0 END), 0)`,
+          'igEngagements',
         )
         .addSelect(
           `COALESCE(SUM(CASE WHEN p.platform = 'instagram' THEN p.views + p.reach ELSE 0 END), 0)`,
@@ -826,10 +817,9 @@ export class AnalyticsController {
       const prevAudience = currentAudience - currentNetGrowth;
       const prevEngagements =
         Number(prevSnapAgg?.engagements || 0) +
-        Number(prevPostAgg?.engagements || 0);
+        Number(prevPostAgg?.igEngagements || 0);
       const prevImpressions =
         Number(prevSnapAgg?.impressions || 0) +
-        Number(prevPostAgg?.fbImpressions || 0) +
         Number(prevPostAgg?.igImpressions || 0);
       const prevVideoViews =
         Number(prevSnapAgg?.fbVideoViews || 0) +
@@ -968,20 +958,15 @@ export class AnalyticsController {
       // --- Post aggregation per profile ---
       const postAgg: {
         profileId: string;
-        engagements: string;
-        fbImpressions: string;
+        igEngagements: string;
         igImpressions: string;
         igVideoViews: string;
       }[] = await this.postRepo
         .createQueryBuilder('p')
         .select('p."profileId"', 'profileId')
         .addSelect(
-          'COALESCE(SUM(p.likes + p.comments + p.shares + p.clicks), 0)',
-          'engagements',
-        )
-        .addSelect(
-          `COALESCE(SUM(CASE WHEN p.platform = 'facebook' THEN p.reach ELSE 0 END), 0)`,
-          'fbImpressions',
+          `COALESCE(SUM(CASE WHEN p.platform = 'instagram' THEN p.likes + p.comments + p.shares + p.clicks ELSE 0 END), 0)`,
+          'igEngagements',
         )
         .addSelect(
           `COALESCE(SUM(CASE WHEN p.platform = 'instagram' THEN p.views + p.reach ELSE 0 END), 0)`,
@@ -1050,14 +1035,13 @@ export class AnalyticsController {
         const snapEngagements = Number(snap?.engagements || 0);
         const snapVideoViews = Number(snap?.videoViews || 0);
 
-        const postEngagements = Number(post?.engagements || 0);
-        const postFbImpressions = Number(post?.fbImpressions || 0);
+        // Only add IG post metrics (FB snapshot already includes post activity)
+        const postIgEngagements = Number(post?.igEngagements || 0);
         const postIgImpressions = Number(post?.igImpressions || 0);
         const postIgVideoViews = Number(post?.igVideoViews || 0);
 
-        const totalImpressions =
-          snapImpressions + postFbImpressions + postIgImpressions;
-        const totalEngagements = snapEngagements + postEngagements;
+        const totalImpressions = snapImpressions + postIgImpressions;
+        const totalEngagements = snapEngagements + postIgEngagements;
         const totalVideoViews = snapVideoViews + postIgVideoViews;
         const followers = followerMap[pid] || 0;
 
