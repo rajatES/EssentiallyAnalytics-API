@@ -58,6 +58,88 @@ export class AnalyticsController {
     }
   }
 
+  /**
+   * Re-sync data for a specific date range across multiple profiles.
+   * Uses the same upsert-override approach as the daily cron — no data
+   * is deleted, fresh Meta data simply overwrites existing rows.
+   */
+  @Post('resync-range')
+  async triggerDateRangeResync(
+    @Body()
+    body: {
+      profileIds: string[];
+      startDate: string;
+      endDate: string;
+    },
+    @Res() res: Response,
+  ) {
+    try {
+      const { profileIds, startDate, endDate } = body;
+
+      if (!profileIds || profileIds.length === 0) {
+        return res.status(400).json({ error: 'No profile IDs provided.' });
+      }
+      if (!startDate || !endDate) {
+        return res.status(400).json({ error: 'Both startDate and endDate are required.' });
+      }
+
+      // Validate dates
+      const start = new Date(`${startDate}T00:00:00.000+05:30`);
+      const end = new Date(`${endDate}T23:59:59.999+05:30`);
+
+      if (isNaN(start.getTime()) || isNaN(end.getTime())) {
+        return res.status(400).json({ error: 'Invalid date format. Use YYYY-MM-DD.' });
+      }
+      if (start > end) {
+        return res.status(400).json({ error: 'startDate must be before endDate.' });
+      }
+
+      const diffDays = Math.ceil(
+        (end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24),
+      );
+      if (diffDays > 90) {
+        return res.status(400).json({
+          error: 'Date range cannot exceed 90 days.',
+        });
+      }
+
+      // Queue a resync job for each profile
+      const profiles = await this.profileRepo.find({
+        where: { profileId: In(profileIds), isActive: true },
+        select: ['profileId', 'syncState'],
+      });
+
+      let queued = 0;
+      for (const profile of profiles) {
+        if (profile.syncState === 'SYNCING') {
+          continue; // Skip profiles that are currently syncing
+        }
+
+        await this.profileRepo.update(
+          { profileId: profile.profileId },
+          { syncState: 'SYNCING', lastSyncError: '' },
+        );
+
+        await this.syncQueue.add('date-range-resync', {
+          profileId: profile.profileId,
+          startDate,
+          endDate,
+        });
+
+        queued++;
+      }
+
+      return res.status(200).json({
+        success: true,
+        message: `Re-sync queued for ${queued} profile(s) (${startDate} to ${endDate}).`,
+        queued,
+        skipped: profiles.length - queued,
+      });
+    } catch (error: any) {
+      return res.status(500).json({ error: error.message });
+    }
+  }
+
   @Get('demographics/:profileId')
   async getDemographics(
     @Param('profileId') profileId: string,
