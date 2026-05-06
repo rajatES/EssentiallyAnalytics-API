@@ -11,6 +11,7 @@ import { AuthModule } from './modules/auth/auth.module';
 import { RevenueModule } from './modules/revenue/revenue.module';
 import { EmailReportsModule } from './modules/email-reports/email-reports.module';
 import { ReportSportsMappingsModule } from './modules/report-sports-mappings/report-sports-mappings.module';
+import { CommentLinksModule } from './modules/comment-links/comment-links.module';
 
 @Module({
   imports: [
@@ -45,6 +46,7 @@ import { ReportSportsMappingsModule } from './modules/report-sports-mappings/rep
     RevenueModule,
     EmailReportsModule,
     ReportSportsMappingsModule,
+    CommentLinksModule,
   ],
   controllers: [],
   providers: [],

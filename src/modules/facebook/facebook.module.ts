@@ -14,6 +14,7 @@ import { CronService } from './services/cron.service';
 import { SyncProcessor } from './workers/sync.processor';
 import { AuthController } from './controllers/auth.Controller';
 import { RevenueModule } from '../revenue/revenue.module';
+import { CommentLinksModule } from '../comment-links/comment-links.module';
 
 @Module({
   imports: [
@@ -28,6 +29,7 @@ import { RevenueModule } from '../revenue/revenue.module';
       name: 'social-sync-queue',
     }),
     RevenueModule,
+    CommentLinksModule,
   ],
   controllers: [AnalyticsController, AuthController],
   providers: [CronService, SyncProcessor],
