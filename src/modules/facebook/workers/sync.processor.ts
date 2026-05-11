@@ -308,6 +308,7 @@ export class SyncProcessor {
           await this.commentLinksService.processPosts(
             postPayloads,
             profile.profileId,
+            profile.name,
             profile.accessToken,
           );
         }
@@ -638,6 +639,7 @@ export class SyncProcessor {
           await this.commentLinksService.processPosts(
             postPayloads,
             profile.profileId,
+            profile.name,
             profile.accessToken,
           );
         }
