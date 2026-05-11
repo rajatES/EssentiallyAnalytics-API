@@ -51,6 +51,11 @@ services:
       - SETUP_SECRET=${SETUP_SECRET}
       - META_APP_ID=${META_APP_ID}
       - META_APP_SECRET=${META_APP_SECRET}
+      - SMTP_HOST=${SMTP_HOST}
+      - SMTP_PORT=${SMTP_PORT}
+      - SMTP_USER=${SMTP_USER}
+      - SMTP_PASS=${SMTP_PASS}
+      - SMTP_FROM=${SMTP_FROM}
     depends_on:
       postgres-db:
         condition: service_healthy
