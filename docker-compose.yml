@@ -6,7 +6,7 @@ services:
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: password
-      POSTGRES_DB: social_studio
+      POSTGRES_DB: social_studio_db
     ports:
       - '5432:5432'
     volumes:
