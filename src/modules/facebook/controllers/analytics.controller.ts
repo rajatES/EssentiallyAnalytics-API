@@ -51,7 +51,9 @@ export class AnalyticsController {
   @Post('sync')
   async triggerGlobalManualSync(@Res() res: Response) {
     try {
-      await this.cronService.handleDailySync();
+      // Manual syncs only fetch page data — comment-links runs
+      // separately via the automated cron schedule.
+      await this.cronService.handleDailySync({ skipCommentLinks: true });
       return res.status(200).json({ success: true, message: 'Sync triggered successfully.' });
     } catch (error: any) {
       return res.status(500).json({ error: error.message });

@@ -17,7 +17,6 @@ import {
   fetchDailyRevenue,
   fetchSegregatedRevenue,
 } from '../services/meta.service';
-import { CommentLinksService } from '../../comment-links/comment-links.service';
 
 @Processor('social-sync-queue')
 export class SyncProcessor {
@@ -34,7 +33,6 @@ export class SyncProcessor {
     private dailyRevenueRepo: Repository<DailyRevenue>,
     @InjectRepository(RevenueMapping)
     private revenueMappingRepo: Repository<RevenueMapping>,
-    private readonly commentLinksService: CommentLinksService,
   ) {}
 
   private sleep(ms: number) {
@@ -302,16 +300,6 @@ export class SyncProcessor {
 
       if (postPayloads.length > 0) {
         await this.postRepo.upsert(postPayloads, ['postId']);
-
-        if (profile.platform === 'facebook') {
-          // Fetch and save comment links for the newly fetched posts
-          await this.commentLinksService.processPosts(
-            postPayloads,
-            profile.profileId,
-            profile.name,
-            profile.accessToken,
-          );
-        }
       }
 
       // --- Revenue (Facebook only) ---
@@ -634,15 +622,6 @@ export class SyncProcessor {
 
       if (postPayloads.length > 0) {
         await this.postRepo.upsert(postPayloads, ['postId']);
-
-        if (profile.platform === 'facebook') {
-          await this.commentLinksService.processPosts(
-            postPayloads,
-            profile.profileId,
-            profile.name,
-            profile.accessToken,
-          );
-        }
       }
 
       // --- DEMOGRAPHICS: Fetch lifetime audience data ---
