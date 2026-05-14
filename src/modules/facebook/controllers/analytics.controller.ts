@@ -111,10 +111,22 @@ export class AnalyticsController {
         select: ['profileId', 'syncState'],
       });
 
+      // Auto-reset stuck profiles: if queue is empty but profile is
+      // still SYNCING, a previous sync crashed — safe to reset.
+      const activeJobs = await this.syncQueue.getActiveCount();
+      const waitingJobs = await this.syncQueue.getWaitingCount();
+
       let queued = 0;
       for (const profile of profiles) {
         if (profile.syncState === 'SYNCING') {
-          continue; // Skip profiles that are currently syncing
+          if (activeJobs > 0 || waitingJobs > 0) {
+            continue; // Genuinely syncing right now — skip
+          }
+          // Stuck from a crashed sync — reset so it can be re-queued
+          await this.profileRepo.update(
+            { profileId: profile.profileId },
+            { syncState: 'FAILED', lastSyncError: 'Auto-reset: was stuck in SYNCING' },
+          );
         }
 
         await this.profileRepo.update(
