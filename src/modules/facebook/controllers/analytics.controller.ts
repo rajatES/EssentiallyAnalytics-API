@@ -54,7 +54,9 @@ export class AnalyticsController {
       // Manual syncs only fetch page data — comment-links runs
       // separately via the automated cron schedule.
       await this.cronService.handleDailySync({ skipCommentLinks: true });
-      return res.status(200).json({ success: true, message: 'Sync triggered successfully.' });
+      return res
+        .status(200)
+        .json({ success: true, message: 'Sync triggered successfully.' });
     } catch (error: any) {
       return res.status(500).json({ error: error.message });
     }
@@ -82,7 +84,9 @@ export class AnalyticsController {
         return res.status(400).json({ error: 'No profile IDs provided.' });
       }
       if (!startDate || !endDate) {
-        return res.status(400).json({ error: 'Both startDate and endDate are required.' });
+        return res
+          .status(400)
+          .json({ error: 'Both startDate and endDate are required.' });
       }
 
       // Validate dates
@@ -90,10 +94,14 @@ export class AnalyticsController {
       const end = new Date(`${endDate}T23:59:59.999+05:30`);
 
       if (isNaN(start.getTime()) || isNaN(end.getTime())) {
-        return res.status(400).json({ error: 'Invalid date format. Use YYYY-MM-DD.' });
+        return res
+          .status(400)
+          .json({ error: 'Invalid date format. Use YYYY-MM-DD.' });
       }
       if (start > end) {
-        return res.status(400).json({ error: 'startDate must be before endDate.' });
+        return res
+          .status(400)
+          .json({ error: 'startDate must be before endDate.' });
       }
 
       const diffDays = Math.ceil(
@@ -125,7 +133,10 @@ export class AnalyticsController {
           // Stuck from a crashed sync — reset so it can be re-queued
           await this.profileRepo.update(
             { profileId: profile.profileId },
-            { syncState: 'FAILED', lastSyncError: 'Auto-reset: was stuck in SYNCING' },
+            {
+              syncState: 'FAILED',
+              lastSyncError: 'Auto-reset: was stuck in SYNCING',
+            },
           );
         }
 
@@ -209,10 +220,7 @@ export class AnalyticsController {
       // Single query: get latest demographic per profile using DISTINCT ON
       const latestDemos: DemographicSnapshot[] = await this.demographicRepo
         .createQueryBuilder('d')
-        .where(
-          'd."profileId" IN (:...ids)',
-          { ids: safeIds },
-        )
+        .where('d."profileId" IN (:...ids)', { ids: safeIds })
         .andWhere(
           `d.id IN (
             SELECT DISTINCT ON (sub."profileId") sub.id
@@ -272,7 +280,9 @@ export class AnalyticsController {
       const end = new Date();
       const start = new Date();
       start.setDate(start.getDate() - days);
-      const startStr = start.toLocaleString('en-CA', { timeZone: 'Asia/Kolkata' }).split(',')[0];
+      const startStr = start
+        .toLocaleString('en-CA', { timeZone: 'Asia/Kolkata' })
+        .split(',')[0];
 
       const profile = await this.profileRepo.findOne({ where: { profileId } });
       if (!profile) return res.status(404).json({ error: 'Profile not found' });
@@ -446,13 +456,19 @@ export class AnalyticsController {
         currentStart = new Date();
         currentStart.setDate(currentStart.getDate() - days);
         // For relative ranges, extract IST date strings
-        currentStartStr = currentStart.toLocaleString('en-CA', { timeZone: 'Asia/Kolkata' }).split(',')[0];
-        currentEndStr = currentEnd.toLocaleString('en-CA', { timeZone: 'Asia/Kolkata' }).split(',')[0];
+        currentStartStr = currentStart
+          .toLocaleString('en-CA', { timeZone: 'Asia/Kolkata' })
+          .split(',')[0];
+        currentEndStr = currentEnd
+          .toLocaleString('en-CA', { timeZone: 'Asia/Kolkata' })
+          .split(',')[0];
       }
 
       const timeDiff = currentEnd.getTime() - currentStart.getTime();
       const prevStart = new Date(currentStart.getTime() - timeDiff);
-      const prevStartStr = prevStart.toLocaleString('en-CA', { timeZone: 'Asia/Kolkata' }).split(',')[0];
+      const prevStartStr = prevStart
+        .toLocaleString('en-CA', { timeZone: 'Asia/Kolkata' })
+        .split(',')[0];
 
       // --- Background sync check (unchanged logic, already lightweight) ---
       const profilesToSync = await this.profileRepo.find({
@@ -634,9 +650,7 @@ export class AnalyticsController {
           videoViews: totalVideoViews,
           engagementRate:
             totalImpressions > 0
-              ? Number(
-                  ((totalEngagements / totalImpressions) * 100).toFixed(1),
-                )
+              ? Number(((totalEngagements / totalImpressions) * 100).toFixed(1))
               : 0,
           revenue: revenueByDate[dStr] || 0,
         });
@@ -740,14 +754,16 @@ export class AnalyticsController {
       }
 
       // --- PREVIOUS PERIOD: aggregate at DB level ---
-      const prevSnapAgg: {
-        netGrowth: string;
-        engagements: string;
-        impressions: string;
-        fbVideoViews: string;
-        pageViews: string;
-        messages: string;
-      } | undefined = await this.snapshotRepo
+      const prevSnapAgg:
+        | {
+            netGrowth: string;
+            engagements: string;
+            impressions: string;
+            fbVideoViews: string;
+            pageViews: string;
+            messages: string;
+          }
+        | undefined = await this.snapshotRepo
         .createQueryBuilder('s')
         .select(
           'COALESCE(SUM(s."followersGained"), 0) - COALESCE(SUM(s.unfollows), 0)',
@@ -779,11 +795,13 @@ export class AnalyticsController {
           .andWhere('dr.date < :end', { end: currentStartStr })
           .getRawOne();
 
-      const prevPostAgg: {
-        igEngagements: string;
-        igImpressions: string;
-        igVideoViews: string;
-      } | undefined = await this.postRepo
+      const prevPostAgg:
+        | {
+            igEngagements: string;
+            igImpressions: string;
+            igVideoViews: string;
+          }
+        | undefined = await this.postRepo
         .createQueryBuilder('p')
         .select(
           `COALESCE(SUM(CASE WHEN p.platform = 'instagram' THEN p.likes + p.comments + p.shares + p.clicks ELSE 0 END), 0)`,

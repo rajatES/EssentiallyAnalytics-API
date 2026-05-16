@@ -144,8 +144,18 @@ export interface HeatmapCell {
 }
 
 export interface LeakageResult {
-  publishedWithoutAllotment: { title: string; date: string; writer: string; feed: string }[];
-  allottedWithoutPublish: { title: string; date: string; writer: string; feed: string }[];
+  publishedWithoutAllotment: {
+    title: string;
+    date: string;
+    writer: string;
+    feed: string;
+  }[];
+  allottedWithoutPublish: {
+    title: string;
+    date: string;
+    writer: string;
+    feed: string;
+  }[];
   publishedWithoutAllotmentCount: number;
   allottedWithoutPublishCount: number;
 }

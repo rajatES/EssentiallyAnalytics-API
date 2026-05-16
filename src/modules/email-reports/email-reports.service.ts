@@ -8,164 +8,193 @@ import { CsvGeneratorService } from './csv-generators.service';
 
 @Injectable()
 export class EmailReportsService {
-    private readonly logger = new Logger(EmailReportsService.name);
-    private transporter: nodemailer.Transporter | null = null;
+  private readonly logger = new Logger(EmailReportsService.name);
+  private transporter: nodemailer.Transporter | null = null;
 
-    constructor(
-        @InjectRepository(ReportRecipient)
-        private readonly recipientRepo: Repository<ReportRecipient>,
-        private readonly csvGenerator: CsvGeneratorService,
-    ) {
-        this.initTransporter();
+  constructor(
+    @InjectRepository(ReportRecipient)
+    private readonly recipientRepo: Repository<ReportRecipient>,
+    private readonly csvGenerator: CsvGeneratorService,
+  ) {
+    this.initTransporter();
+  }
+
+  private initTransporter() {
+    const host = process.env.SMTP_HOST;
+    const port = parseInt(process.env.SMTP_PORT || '587', 10);
+    const user = process.env.SMTP_USER;
+    const pass = process.env.SMTP_PASS;
+
+    if (!host || !user || !pass) {
+      this.logger.warn(
+        'SMTP not configured — emails will be disabled. Set SMTP_HOST, SMTP_USER, SMTP_PASS.',
+      );
+      return;
     }
 
-    private initTransporter() {
-        const host = process.env.SMTP_HOST;
-        const port = parseInt(process.env.SMTP_PORT || '587', 10);
-        const user = process.env.SMTP_USER;
-        const pass = process.env.SMTP_PASS;
+    this.transporter = nodemailer.createTransport({
+      host,
+      port,
+      secure: port === 465,
+      auth: { user, pass },
+    });
 
-        if (!host || !user || !pass) {
-            this.logger.warn('SMTP not configured — emails will be disabled. Set SMTP_HOST, SMTP_USER, SMTP_PASS.');
-            return;
-        }
+    this.logger.log(`SMTP transporter initialized: ${host}:${port}`);
+  }
 
-        this.transporter = nodemailer.createTransport({
-            host,
-            port,
-            secure: port === 465,
-            auth: { user, pass },
-        });
+  // ═══════════════════════════════════════════════════════
+  // RECIPIENT CRUD
+  // ═══════════════════════════════════════════════════════
 
-        this.logger.log(`SMTP transporter initialized: ${host}:${port}`);
+  async listRecipients(): Promise<ReportRecipient[]> {
+    return this.recipientRepo.find({ order: { createdAt: 'ASC' } });
+  }
+
+  async addRecipient(email: string): Promise<ReportRecipient> {
+    const normalized = email.trim().toLowerCase();
+    const existing = await this.recipientRepo.findOne({
+      where: { email: normalized },
+    });
+    if (existing) {
+      // Reactivate if it was deactivated
+      existing.isActive = true;
+      return this.recipientRepo.save(existing);
+    }
+    return this.recipientRepo.save(
+      this.recipientRepo.create({ email: normalized }),
+    );
+  }
+
+  async removeRecipient(id: number): Promise<void> {
+    await this.recipientRepo.delete(id);
+  }
+
+  // ═══════════════════════════════════════════════════════
+  // CRON JOBS
+  // ═══════════════════════════════════════════════════════
+
+  /**
+   * Daily report — 7:00 PM IST every day.
+   * Covers the past 7 days including yesterday (both Traffic & Revenue share the same window).
+   */
+  @Cron('0 19 * * *', { timeZone: 'Asia/Kolkata' })
+  async handleDailyReport() {
+    this.logger.log('⏰ Daily report cron triggered');
+    const endDate = this.getDateStr(-1); // yesterday
+    const startDate = this.getDateStr(-7); // 7 days ago → inclusive 7-day window ending yesterday
+    await this.sendReport('daily', startDate, endDate);
+  }
+
+  /** Manual trigger for testing — same 7-day window as the daily cron. */
+  async sendTestReport(): Promise<{ success: boolean; message: string }> {
+    const endDate = this.getDateStr(-1);
+    const startDate = this.getDateStr(-7);
+    return this.sendReport('test', startDate, endDate);
+  }
+
+  // ═══════════════════════════════════════════════════════
+  // CORE SEND LOGIC
+  // ═══════════════════════════════════════════════════════
+
+  private async sendReport(
+    type: 'daily' | 'test',
+    startDate: string,
+    endDate: string,
+  ): Promise<{ success: boolean; message: string }> {
+    if (!this.transporter) {
+      const msg =
+        'SMTP not configured. Set SMTP_HOST, SMTP_USER, SMTP_PASS in .env';
+      this.logger.warn(msg);
+      return { success: false, message: msg };
     }
 
-    // ═══════════════════════════════════════════════════════
-    // RECIPIENT CRUD
-    // ═══════════════════════════════════════════════════════
-
-    async listRecipients(): Promise<ReportRecipient[]> {
-        return this.recipientRepo.find({ order: { createdAt: 'ASC' } });
+    const recipients = await this.recipientRepo.find({
+      where: { isActive: true },
+    });
+    if (recipients.length === 0) {
+      const msg = 'No active recipients configured';
+      this.logger.warn(msg);
+      return { success: false, message: msg };
     }
 
-    async addRecipient(email: string): Promise<ReportRecipient> {
-        const normalized = email.trim().toLowerCase();
-        const existing = await this.recipientRepo.findOne({ where: { email: normalized } });
-        if (existing) {
-            // Reactivate if it was deactivated
-            existing.isActive = true;
-            return this.recipientRepo.save(existing);
-        }
-        return this.recipientRepo.save(this.recipientRepo.create({ email: normalized }));
+    const toList = recipients.map((r) => r.email).join(', ');
+    const dateLabel = `${startDate} to ${endDate}`;
+    const typeLabel = type === 'test' ? 'Test' : 'Daily';
+
+    this.logger.log(`Generating ${typeLabel} report CSVs for ${dateLabel}...`);
+
+    try {
+      const [trafficCSV, revenueCSV, metaCSV] = await Promise.all([
+        this.csvGenerator.generateTrafficCSV(startDate, endDate),
+        this.csvGenerator.generateRevenueCSV(startDate, endDate),
+        this.csvGenerator.generateMetaReportCSV(startDate, endDate),
+      ]);
+
+      const filePrefix = `${startDate}_to_${endDate}`;
+
+      const attachments = [
+        {
+          filename: `Traffic_Report_${filePrefix}.csv`,
+          content: trafficCSV,
+          contentType: 'text/csv',
+        },
+        {
+          filename: `Revenue_Report_${filePrefix}.csv`,
+          content: revenueCSV,
+          contentType: 'text/csv',
+        },
+        {
+          filename: `Meta_Overview_Report_${filePrefix}.csv`,
+          content: metaCSV,
+          contentType: 'text/csv',
+        },
+      ];
+
+      const fromAddr =
+        process.env.SMTP_FROM ||
+        process.env.SMTP_USER ||
+        'reports@studio.local';
+
+      await this.transporter.sendMail({
+        from: fromAddr,
+        to: toList,
+        subject: `📊 ${typeLabel} Report — ${dateLabel} | ES Studio`,
+        html: this.buildEmailHtml(
+          typeLabel,
+          dateLabel,
+          trafficCSV,
+          revenueCSV,
+          metaCSV,
+        ),
+        attachments,
+      });
+
+      const msg = `${typeLabel} report sent to ${recipients.length} recipient(s) for ${dateLabel}`;
+      this.logger.log(`✅ ${msg}`);
+      return { success: true, message: msg };
+    } catch (error: any) {
+      const msg = `Failed to send ${typeLabel} report: ${error.message}`;
+      this.logger.error(msg, error.stack);
+      return { success: false, message: msg };
     }
+  }
 
-    async removeRecipient(id: number): Promise<void> {
-        await this.recipientRepo.delete(id);
-    }
+  // ═══════════════════════════════════════════════════════
+  // HTML EMAIL TEMPLATE
+  // ═══════════════════════════════════════════════════════
 
-    // ═══════════════════════════════════════════════════════
-    // CRON JOBS
-    // ═══════════════════════════════════════════════════════
+  private buildEmailHtml(
+    typeLabel: string,
+    dateLabel: string,
+    trafficCSV: string,
+    revenueCSV: string,
+    metaCSV: string,
+  ): string {
+    const trafficRows = Math.max(0, trafficCSV.split('\n').length - 1);
+    const revenueRows = Math.max(0, revenueCSV.split('\n').length - 1);
+    const metaRows = Math.max(0, metaCSV.split('\n').length - 1);
 
-    /**
-     * Daily report — 7:00 PM IST every day.
-     * Covers the past 7 days including yesterday (both Traffic & Revenue share the same window).
-     */
-    @Cron('0 19 * * *', { timeZone: 'Asia/Kolkata' })
-    async handleDailyReport() {
-        this.logger.log('⏰ Daily report cron triggered');
-        const endDate = this.getDateStr(-1);   // yesterday
-        const startDate = this.getDateStr(-7); // 7 days ago → inclusive 7-day window ending yesterday
-        await this.sendReport('daily', startDate, endDate);
-    }
-
-    /** Manual trigger for testing — same 7-day window as the daily cron. */
-    async sendTestReport(): Promise<{ success: boolean; message: string }> {
-        const endDate = this.getDateStr(-1);
-        const startDate = this.getDateStr(-7);
-        return this.sendReport('test', startDate, endDate);
-    }
-
-    // ═══════════════════════════════════════════════════════
-    // CORE SEND LOGIC
-    // ═══════════════════════════════════════════════════════
-
-    private async sendReport(
-        type: 'daily' | 'test',
-        startDate: string,
-        endDate: string,
-    ): Promise<{ success: boolean; message: string }> {
-        if (!this.transporter) {
-            const msg = 'SMTP not configured. Set SMTP_HOST, SMTP_USER, SMTP_PASS in .env';
-            this.logger.warn(msg);
-            return { success: false, message: msg };
-        }
-
-        const recipients = await this.recipientRepo.find({ where: { isActive: true } });
-        if (recipients.length === 0) {
-            const msg = 'No active recipients configured';
-            this.logger.warn(msg);
-            return { success: false, message: msg };
-        }
-
-        const toList = recipients.map(r => r.email).join(', ');
-        const dateLabel = `${startDate} to ${endDate}`;
-        const typeLabel = type === 'test' ? 'Test' : 'Daily';
-
-        this.logger.log(`Generating ${typeLabel} report CSVs for ${dateLabel}...`);
-
-        try {
-            const [trafficCSV, revenueCSV, metaCSV] = await Promise.all([
-                this.csvGenerator.generateTrafficCSV(startDate, endDate),
-                this.csvGenerator.generateRevenueCSV(startDate, endDate),
-                this.csvGenerator.generateMetaReportCSV(startDate, endDate),
-            ]);
-
-            const filePrefix = `${startDate}_to_${endDate}`;
-
-            const attachments = [
-                { filename: `Traffic_Report_${filePrefix}.csv`, content: trafficCSV, contentType: 'text/csv' },
-                { filename: `Revenue_Report_${filePrefix}.csv`, content: revenueCSV, contentType: 'text/csv' },
-                { filename: `Meta_Overview_Report_${filePrefix}.csv`, content: metaCSV, contentType: 'text/csv' },
-            ];
-
-            const fromAddr = process.env.SMTP_FROM || process.env.SMTP_USER || 'reports@studio.local';
-
-            await this.transporter.sendMail({
-                from: fromAddr,
-                to: toList,
-                subject: `📊 ${typeLabel} Report — ${dateLabel} | ES Studio`,
-                html: this.buildEmailHtml(typeLabel, dateLabel, trafficCSV, revenueCSV, metaCSV),
-                attachments,
-            });
-
-            const msg = `${typeLabel} report sent to ${recipients.length} recipient(s) for ${dateLabel}`;
-            this.logger.log(`✅ ${msg}`);
-            return { success: true, message: msg };
-
-        } catch (error: any) {
-            const msg = `Failed to send ${typeLabel} report: ${error.message}`;
-            this.logger.error(msg, error.stack);
-            return { success: false, message: msg };
-        }
-    }
-
-    // ═══════════════════════════════════════════════════════
-    // HTML EMAIL TEMPLATE
-    // ═══════════════════════════════════════════════════════
-
-    private buildEmailHtml(
-        typeLabel: string,
-        dateLabel: string,
-        trafficCSV: string,
-        revenueCSV: string,
-        metaCSV: string,
-    ): string {
-        const trafficRows = Math.max(0, trafficCSV.split('\n').length - 1);
-        const revenueRows = Math.max(0, revenueCSV.split('\n').length - 1);
-        const metaRows = Math.max(0, metaCSV.split('\n').length - 1);
-
-        return `
+    return `
 <!DOCTYPE html>
 <html>
 <head>
@@ -212,17 +241,17 @@ export class EmailReportsService {
   </div>
 </body>
 </html>`;
-    }
+  }
 
-    // ═══════════════════════════════════════════════════════
-    // HELPERS
-    // ═══════════════════════════════════════════════════════
+  // ═══════════════════════════════════════════════════════
+  // HELPERS
+  // ═══════════════════════════════════════════════════════
 
-    private getDateStr(offsetDays: number): string {
-        // Use IST (Asia/Kolkata) for date calculation
-        const now = new Date();
-        now.setDate(now.getDate() + offsetDays);
-        // Extract YYYY-MM-DD in IST using en-CA locale (outputs YYYY-MM-DD format)
-        return now.toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
-    }
+  private getDateStr(offsetDays: number): string {
+    // Use IST (Asia/Kolkata) for date calculation
+    const now = new Date();
+    now.setDate(now.getDate() + offsetDays);
+    // Extract YYYY-MM-DD in IST using en-CA locale (outputs YYYY-MM-DD format)
+    return now.toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+  }
 }

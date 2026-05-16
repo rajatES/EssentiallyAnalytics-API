@@ -99,8 +99,8 @@ export class SyncProcessor {
           `[Worker][Resync] Processing chunk ${i + 1}/${chunks.length} (${chunk.start.toISOString().split('T')[0]} to ${chunk.end.toISOString().split('T')[0]})...`,
         );
 
-        let sinceUnix = Math.floor(chunk.start.getTime() / 1000);
-        let untilUnix = Math.floor(chunk.end.getTime() / 1000);
+        const sinceUnix = Math.floor(chunk.start.getTime() / 1000);
+        const untilUnix = Math.floor(chunk.end.getTime() / 1000);
 
         const dailyRaw = await fetchDailySnapshot(
           profile.profileId,
@@ -131,7 +131,7 @@ export class SyncProcessor {
         }
 
         const snapshotPayloads: any[] = [];
-        let fillDate = new Date(chunk.start);
+        const fillDate = new Date(chunk.start);
 
         while (fillDate <= chunk.end) {
           const dateStr = fillDate.toISOString().split('T')[0];
@@ -304,7 +304,9 @@ export class SyncProcessor {
 
       // --- Revenue (Facebook only) ---
       if (profile.platform === 'facebook') {
-        console.log(`[Worker][Resync] Fetching revenue data for ${profileId}...`);
+        console.log(
+          `[Worker][Resync] Fetching revenue data for ${profileId}...`,
+        );
         try {
           const sinceUnix = Math.floor(start.getTime() / 1000);
           const untilUnix = Math.floor(end.getTime() / 1000);
@@ -422,8 +424,8 @@ export class SyncProcessor {
           `[Worker] Processing chunk ${i + 1}/${chunks.length} (${chunk.start.toISOString().split('T')[0]} to ${chunk.end.toISOString().split('T')[0]})...`,
         );
 
-        let sinceUnix = Math.floor(chunk.start.getTime() / 1000);
-        let untilUnix = Math.floor(chunk.end.getTime() / 1000);
+        const sinceUnix = Math.floor(chunk.start.getTime() / 1000);
+        const untilUnix = Math.floor(chunk.end.getTime() / 1000);
 
         const dailyRaw = await fetchDailySnapshot(
           profile.profileId,
@@ -454,7 +456,7 @@ export class SyncProcessor {
         }
 
         const snapshotPayloads: any[] = [];
-        let fillDate = new Date(chunk.start);
+        const fillDate = new Date(chunk.start);
 
         while (fillDate <= chunk.end) {
           const dateStr = fillDate.toISOString().split('T')[0];
@@ -655,7 +657,9 @@ export class SyncProcessor {
 
       // --- REVENUE: Fetch segregated daily revenue for Facebook pages only ---
       if (profile.platform === 'facebook') {
-        console.log(`[Worker] Fetching segregated revenue data for ${profileId}...`);
+        console.log(
+          `[Worker] Fetching segregated revenue data for ${profileId}...`,
+        );
         try {
           const sinceUnix = Math.floor(start.getTime() / 1000);
           const untilUnix = Math.floor(end.getTime() / 1000);

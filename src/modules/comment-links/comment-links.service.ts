@@ -65,7 +65,12 @@ export class CommentLinksService {
     );
 
     for (const post of postsToCheck) {
-      await this.checkPostComment(post.postId, profileId, pageName, accessToken);
+      await this.checkPostComment(
+        post.postId,
+        profileId,
+        pageName,
+        accessToken,
+      );
       // Small sleep to avoid rate limiting since we hit the API per post
       await this.sleep(800);
     }

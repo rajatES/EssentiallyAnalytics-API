@@ -1,7 +1,13 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, Between, In, LessThanOrEqual, MoreThanOrEqual } from 'typeorm';
+import {
+  Repository,
+  Between,
+  In,
+  LessThanOrEqual,
+  MoreThanOrEqual,
+} from 'typeorm';
 import * as crypto from 'crypto';
 import { SheetsSyncService } from './sheets-sync.service';
 import { MsnSourceRow } from './entities/msn-source.entity';
@@ -66,7 +72,9 @@ export class MsnProductionService {
       // Upsert source rows — use rowId as natural key
       if (sourceRows.length > 0) {
         const existingHashes = new Map<string, string>();
-        const existing = await this.sourceRepo.find({ select: ['rowId', 'rawHash'] });
+        const existing = await this.sourceRepo.find({
+          select: ['rowId', 'rawHash'],
+        });
         for (const row of existing) existingHashes.set(row.rowId, row.rawHash);
 
         const toUpsert: MsnSourceRow[] = [];
@@ -98,7 +106,9 @@ export class MsnProductionService {
         }
 
         // Remove rows no longer in sheet
-        const staleIds = [...existingHashes.keys()].filter((id) => !incomingIds.has(id));
+        const staleIds = [...existingHashes.keys()].filter(
+          (id) => !incomingIds.has(id),
+        );
         if (staleIds.length > 0) {
           await this.sourceRepo.delete(staleIds);
           this.logger.log(`Source: removed ${staleIds.length} stale rows`);
@@ -108,7 +118,9 @@ export class MsnProductionService {
       // Upsert allotment rows — deterministic ID from row content
       if (allotmentRows.length > 0) {
         const existingHashes = new Map<string, string>();
-        const existing = await this.allotmentRepo.find({ select: ['id', 'rawHash'] });
+        const existing = await this.allotmentRepo.find({
+          select: ['id', 'rawHash'],
+        });
         for (const row of existing) existingHashes.set(row.id, row.rawHash);
 
         const toUpsert: MsnAllotmentRow[] = [];
@@ -143,11 +155,15 @@ export class MsnProductionService {
           for (let i = 0; i < toUpsert.length; i += 500) {
             await this.allotmentRepo.upsert(toUpsert.slice(i, i + 500), ['id']);
           }
-          this.logger.log(`Allotment: upserted ${toUpsert.length} changed rows`);
+          this.logger.log(
+            `Allotment: upserted ${toUpsert.length} changed rows`,
+          );
         }
 
         // Remove stale rows
-        const staleIds = [...existingHashes.keys()].filter((id) => !incomingIds.has(id));
+        const staleIds = [...existingHashes.keys()].filter(
+          (id) => !incomingIds.has(id),
+        );
         if (staleIds.length > 0) {
           for (let i = 0; i < staleIds.length; i += 500) {
             await this.allotmentRepo.delete(staleIds.slice(i, i + 500));
@@ -162,7 +178,9 @@ export class MsnProductionService {
       ]);
 
       this.lastSyncTime = new Date();
-      this.logger.log(`Sync complete: ${srcCount} source rows, ${allCount} allotment rows in DB`);
+      this.logger.log(
+        `Sync complete: ${srcCount} source rows, ${allCount} allotment rows in DB`,
+      );
     } catch (e: any) {
       this.lastError = e.message;
       this.logger.error(`Sync failed: ${e.message}`);
@@ -200,7 +218,8 @@ export class MsnProductionService {
     if (params.feeds?.length) where.feed = In(params.feeds);
     if (params.writers?.length) where.writer = In(params.writers);
     if (params.editors?.length) where.editor = In(params.editors);
-    if (params.contentTypes?.length) where.contentType = In(params.contentTypes);
+    if (params.contentTypes?.length)
+      where.contentType = In(params.contentTypes);
     if (params.statuses?.length) where.status = In(params.statuses);
     return where;
   }
@@ -217,7 +236,8 @@ export class MsnProductionService {
     if (params.brands?.length) where.brand = In(params.brands);
     if (params.feeds?.length) where.feed = In(params.feeds);
     if (params.writers?.length) where.writer = In(params.writers);
-    if (params.contentTypes?.length) where.contentType = In(params.contentTypes);
+    if (params.contentTypes?.length)
+      where.contentType = In(params.contentTypes);
     if (params.statuses?.length) where.status = In(params.statuses);
     if (params.allotters?.length) where.allottedBy = In(params.allotters);
     return where;
@@ -227,7 +247,9 @@ export class MsnProductionService {
     return this.sourceRepo.find({ where: this.buildSourceWhere(params) });
   }
 
-  private async filterAllotment(params: MsnFilterParams): Promise<MsnAllotmentRow[]> {
+  private async filterAllotment(
+    params: MsnFilterParams,
+  ): Promise<MsnAllotmentRow[]> {
     return this.allotmentRepo.find({ where: this.buildAllotmentWhere(params) });
   }
 
@@ -273,7 +295,8 @@ export class MsnProductionService {
       if (r.feed && r.feed !== 'Unknown') feeds.add(r.feed);
       if (r.writer && r.writer !== 'Unknown') writers.add(r.writer);
       if (r.editor && r.editor !== 'Unknown') editors.add(r.editor);
-      if (r.contentType && r.contentType !== 'Unknown') contentTypes.add(r.contentType);
+      if (r.contentType && r.contentType !== 'Unknown')
+        contentTypes.add(r.contentType);
       if (r.status && r.status !== 'Unknown') statuses.add(r.status);
       if (r.date) {
         const d = typeof r.date === 'string' ? r.date : r.date;
@@ -286,9 +309,11 @@ export class MsnProductionService {
       if (r.brand && r.brand !== 'Unknown') brands.add(r.brand);
       if (r.feed && r.feed !== 'Unknown') feeds.add(r.feed);
       if (r.writer && r.writer !== 'Unknown') writers.add(r.writer);
-      if (r.contentType && r.contentType !== 'Unknown') contentTypes.add(r.contentType);
+      if (r.contentType && r.contentType !== 'Unknown')
+        contentTypes.add(r.contentType);
       if (r.status && r.status !== 'Unknown') statuses.add(r.status);
-      if (r.allottedBy && r.allottedBy !== 'Unknown') allotters.add(r.allottedBy);
+      if (r.allottedBy && r.allottedBy !== 'Unknown')
+        allotters.add(r.allottedBy);
       if (r.date) {
         const d = typeof r.date === 'string' ? r.date : r.date;
         if (!minDate || d < minDate) minDate = d;
@@ -330,8 +355,14 @@ export class MsnProductionService {
         published: this.calcDelta(cur.published, prev.published),
         scheduled: this.calcDelta(cur.scheduled, prev.scheduled),
         publishRate: this.calcDelta(cur.publishRate, prev.publishRate),
-        avgLeadTimeHours: this.calcDelta(cur.avgLeadTimeHours, prev.avgLeadTimeHours),
-        piecesPerWriterPerDay: this.calcDelta(cur.piecesPerWriterPerDay, prev.piecesPerWriterPerDay),
+        avgLeadTimeHours: this.calcDelta(
+          cur.avgLeadTimeHours,
+          prev.avgLeadTimeHours,
+        ),
+        piecesPerWriterPerDay: this.calcDelta(
+          cur.piecesPerWriterPerDay,
+          prev.piecesPerWriterPerDay,
+        ),
         dropOffRate: this.calcDelta(cur.dropOffRate, prev.dropOffRate),
       },
     };
@@ -343,40 +374,47 @@ export class MsnProductionService {
   ): Omit<KpiOverview, 'deltas'> {
     const totalProduced = source.length;
     const totalAllotted = allotment.length;
-    const published = source.filter((r) =>
-      r.status === 'Published' || r.status === 'Published (PR)',
+    const published = source.filter(
+      (r) => r.status === 'Published' || r.status === 'Published (PR)',
     ).length;
-    const scheduled = source.filter((r) =>
-      r.status === 'Scheduled' || r.status === 'Scheduled (PR)',
+    const scheduled = source.filter(
+      (r) => r.status === 'Scheduled' || r.status === 'Scheduled (PR)',
     ).length;
-    const publishRate = totalAllotted > 0 ? Math.round((published / totalAllotted) * 1000) / 10 : 0;
+    const publishRate =
+      totalAllotted > 0
+        ? Math.round((published / totalAllotted) * 1000) / 10
+        : 0;
 
     const leadTimes: number[] = [];
     for (const r of source) {
       if (r.publishTimestamp && r.date) {
-        const diff = new Date(r.publishTimestamp).getTime() - new Date(r.date).getTime();
+        const diff =
+          new Date(r.publishTimestamp).getTime() - new Date(r.date).getTime();
         if (diff >= 0 && diff < 30 * 24 * 3600 * 1000) {
           leadTimes.push(diff / 3600000);
         }
       }
     }
     leadTimes.sort((a, b) => a - b);
-    const avgLeadTimeHours = leadTimes.length > 0
-      ? Math.round(leadTimes[Math.floor(leadTimes.length / 2)] * 10) / 10
-      : 0;
+    const avgLeadTimeHours =
+      leadTimes.length > 0
+        ? Math.round(leadTimes[Math.floor(leadTimes.length / 2)] * 10) / 10
+        : 0;
 
-    const writers = new Set(source.map((r) => r.writer).filter((w) => w !== 'Unknown'));
-    const dates = new Set(
-      source.map((r) => r.date).filter(Boolean),
+    const writers = new Set(
+      source.map((r) => r.writer).filter((w) => w !== 'Unknown'),
     );
+    const dates = new Set(source.map((r) => r.date).filter(Boolean));
     const numDays = Math.max(dates.size, 1);
     const numWriters = Math.max(writers.size, 1);
-    const piecesPerWriterPerDay = Math.round((totalProduced / numWriters / numDays) * 100) / 100;
+    const piecesPerWriterPerDay =
+      Math.round((totalProduced / numWriters / numDays) * 100) / 100;
 
-    const dropOff = source.filter((r) =>
-      r.status === 'Sent Back' || r.status === 'Trashed',
+    const dropOff = source.filter(
+      (r) => r.status === 'Sent Back' || r.status === 'Trashed',
     ).length;
-    const dropOffRate = totalProduced > 0 ? Math.round((dropOff / totalProduced) * 1000) / 10 : 0;
+    const dropOffRate =
+      totalProduced > 0 ? Math.round((dropOff / totalProduced) * 1000) / 10 : 0;
 
     return {
       totalProduced,
@@ -390,7 +428,10 @@ export class MsnProductionService {
     };
   }
 
-  async getTimeseries(params: MsnFilterParams, granularity: string = 'day'): Promise<TimeseriesBucket[]> {
+  async getTimeseries(
+    params: MsnFilterParams,
+    granularity: string = 'day',
+  ): Promise<TimeseriesBucket[]> {
     const [source, allotment] = await Promise.all([
       this.filterSource(params),
       this.filterAllotment(params),
@@ -403,7 +444,9 @@ export class MsnProductionService {
       if (granularity === 'week') {
         const day = d.getUTCDay();
         const diff = d.getUTCDate() - day + (day === 0 ? -6 : 1);
-        const weekStart = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), diff));
+        const weekStart = new Date(
+          Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), diff),
+        );
         return weekStart.toISOString().split('T')[0];
       }
       if (granularity === 'month') {
@@ -418,20 +461,35 @@ export class MsnProductionService {
       const key = bucketKey(r.date);
       if (key === 'unknown') continue;
       if (!buckets.has(key)) {
-        buckets.set(key, { date: key, article: 0, slideshow: 0, ssAutomation: 0, allotted: 0, published: 0 });
+        buckets.set(key, {
+          date: key,
+          article: 0,
+          slideshow: 0,
+          ssAutomation: 0,
+          allotted: 0,
+          published: 0,
+        });
       }
       const b = buckets.get(key)!;
       if (r.contentType === 'Article') b.article++;
       else if (r.contentType === 'Slideshow') b.slideshow++;
       else if (r.contentType === 'SS Automation') b.ssAutomation++;
-      if (r.status === 'Published' || r.status === 'Published (PR)') b.published++;
+      if (r.status === 'Published' || r.status === 'Published (PR)')
+        b.published++;
     }
 
     for (const r of allotment) {
       const key = bucketKey(r.date);
       if (key === 'unknown') continue;
       if (!buckets.has(key)) {
-        buckets.set(key, { date: key, article: 0, slideshow: 0, ssAutomation: 0, allotted: 0, published: 0 });
+        buckets.set(key, {
+          date: key,
+          article: 0,
+          slideshow: 0,
+          ssAutomation: 0,
+          allotted: 0,
+          published: 0,
+        });
       }
       buckets.get(key)!.allotted++;
     }
@@ -450,10 +508,12 @@ export class MsnProductionService {
       ['Submitted', 'Published', 'Scheduled', 'Picked'].includes(r.status),
     ).length;
     const scheduled = source.filter((r) =>
-      ['Scheduled', 'Scheduled (PR)', 'Published', 'Published (PR)'].includes(r.status),
+      ['Scheduled', 'Scheduled (PR)', 'Published', 'Published (PR)'].includes(
+        r.status,
+      ),
     ).length;
-    const published = source.filter((r) =>
-      r.status === 'Published' || r.status === 'Published (PR)',
+    const published = source.filter(
+      (r) => r.status === 'Published' || r.status === 'Published (PR)',
     ).length;
 
     const stages = [
@@ -465,12 +525,17 @@ export class MsnProductionService {
 
     return stages.map((s, i) => ({
       ...s,
-      percentage: stages[0].count > 0 ? Math.round((s.count / stages[0].count) * 1000) / 10 : 0,
+      percentage:
+        stages[0].count > 0
+          ? Math.round((s.count / stages[0].count) * 1000) / 10
+          : 0,
       dropOff: i > 0 ? stages[i - 1].count - s.count : 0,
     }));
   }
 
-  async getStatusMix(params: MsnFilterParams): Promise<{ source: StatusMixEntry[]; allotment: StatusMixEntry[] }> {
+  async getStatusMix(
+    params: MsnFilterParams,
+  ): Promise<{ source: StatusMixEntry[]; allotment: StatusMixEntry[] }> {
     const [source, allotment] = await Promise.all([
       this.filterSource(params),
       this.filterAllotment(params),
@@ -508,8 +573,15 @@ export class MsnProductionService {
     const getOrCreate = (feed: string): FeedStats => {
       if (!feedMap.has(feed)) {
         feedMap.set(feed, {
-          feed, allotted: 0, produced: 0, published: 0, publishRate: 0,
-          avgLeadTimeHours: 0, articles: 0, slideshows: 0, ssAutomation: 0,
+          feed,
+          allotted: 0,
+          produced: 0,
+          published: 0,
+          publishRate: 0,
+          avgLeadTimeHours: 0,
+          articles: 0,
+          slideshows: 0,
+          ssAutomation: 0,
         });
       }
       return feedMap.get(feed)!;
@@ -522,13 +594,17 @@ export class MsnProductionService {
     for (const r of source) {
       const f = getOrCreate(r.feed);
       f.produced++;
-      if (r.status === 'Published' || r.status === 'Published (PR)') f.published++;
+      if (r.status === 'Published' || r.status === 'Published (PR)')
+        f.published++;
       if (r.contentType === 'Article') f.articles++;
       else if (r.contentType === 'Slideshow') f.slideshows++;
       else if (r.contentType === 'SS Automation') f.ssAutomation++;
 
       if (r.publishTimestamp && r.date) {
-        const diff = (new Date(r.publishTimestamp).getTime() - new Date(r.date).getTime()) / 3600000;
+        const diff =
+          (new Date(r.publishTimestamp).getTime() -
+            new Date(r.date).getTime()) /
+          3600000;
         if (diff >= 0 && diff < 720) {
           if (!leadTimes.has(r.feed)) leadTimes.set(r.feed, []);
           leadTimes.get(r.feed)!.push(diff);
@@ -537,11 +613,13 @@ export class MsnProductionService {
     }
 
     for (const f of feedMap.values()) {
-      f.publishRate = f.allotted > 0 ? Math.round((f.published / f.allotted) * 1000) / 10 : 0;
+      f.publishRate =
+        f.allotted > 0 ? Math.round((f.published / f.allotted) * 1000) / 10 : 0;
       const lt = leadTimes.get(f.feed);
       if (lt?.length) {
         lt.sort((a, b) => a - b);
-        f.avgLeadTimeHours = Math.round(lt[Math.floor(lt.length / 2)] * 10) / 10;
+        f.avgLeadTimeHours =
+          Math.round(lt[Math.floor(lt.length / 2)] * 10) / 10;
       }
     }
 
@@ -559,8 +637,16 @@ export class MsnProductionService {
     const getOrCreate = (writer: string): WriterStats => {
       if (!wMap.has(writer)) {
         wMap.set(writer, {
-          writer, allotted: 0, submitted: 0, published: 0, publishRate: 0,
-          sentBackRate: 0, avgLeadTimeHours: 0, articles: 0, slideshows: 0, total: 0,
+          writer,
+          allotted: 0,
+          submitted: 0,
+          published: 0,
+          publishRate: 0,
+          sentBackRate: 0,
+          avgLeadTimeHours: 0,
+          articles: 0,
+          slideshows: 0,
+          total: 0,
         });
       }
       return wMap.get(writer)!;
@@ -570,7 +656,8 @@ export class MsnProductionService {
       if (r.writer !== 'Unknown') {
         const w = getOrCreate(r.writer);
         w.allotted++;
-        if (['Submitted', 'Published', 'Scheduled'].includes(r.status)) w.submitted++;
+        if (['Submitted', 'Published', 'Scheduled'].includes(r.status))
+          w.submitted++;
       }
     }
 
@@ -580,12 +667,20 @@ export class MsnProductionService {
       if (r.writer === 'Unknown') continue;
       const w = getOrCreate(r.writer);
       w.total++;
-      if (r.status === 'Published' || r.status === 'Published (PR)') w.published++;
+      if (r.status === 'Published' || r.status === 'Published (PR)')
+        w.published++;
       if (r.contentType === 'Article') w.articles++;
-      else if (r.contentType === 'Slideshow' || r.contentType === 'SS Automation') w.slideshows++;
+      else if (
+        r.contentType === 'Slideshow' ||
+        r.contentType === 'SS Automation'
+      )
+        w.slideshows++;
 
       if (r.publishTimestamp && r.date) {
-        const diff = (new Date(r.publishTimestamp).getTime() - new Date(r.date).getTime()) / 3600000;
+        const diff =
+          (new Date(r.publishTimestamp).getTime() -
+            new Date(r.date).getTime()) /
+          3600000;
         if (diff >= 0 && diff < 720) {
           if (!leadTimes.has(r.writer)) leadTimes.set(r.writer, []);
           leadTimes.get(r.writer)!.push(diff);
@@ -594,15 +689,20 @@ export class MsnProductionService {
     }
 
     for (const w of wMap.values()) {
-      w.publishRate = w.allotted > 0 ? Math.round((w.published / w.allotted) * 1000) / 10 : 0;
+      w.publishRate =
+        w.allotted > 0 ? Math.round((w.published / w.allotted) * 1000) / 10 : 0;
       const sentBack = source.filter(
-        (r) => r.writer === w.writer && (r.status === 'Sent Back' || r.status === 'Trashed'),
+        (r) =>
+          r.writer === w.writer &&
+          (r.status === 'Sent Back' || r.status === 'Trashed'),
       ).length;
-      w.sentBackRate = w.total > 0 ? Math.round((sentBack / w.total) * 1000) / 10 : 0;
+      w.sentBackRate =
+        w.total > 0 ? Math.round((sentBack / w.total) * 1000) / 10 : 0;
       const lt = leadTimes.get(w.writer);
       if (lt?.length) {
         lt.sort((a, b) => a - b);
-        w.avgLeadTimeHours = Math.round(lt[Math.floor(lt.length / 2)] * 10) / 10;
+        w.avgLeadTimeHours =
+          Math.round(lt[Math.floor(lt.length / 2)] * 10) / 10;
       }
     }
 
@@ -612,19 +712,35 @@ export class MsnProductionService {
   async getEditorStats(params: MsnFilterParams): Promise<EditorStats[]> {
     const source = await this.filterSource(params);
 
-    const eMap = new Map<string, { count: number; leadTimes: number[]; sentBack: number; types: Set<string> }>();
+    const eMap = new Map<
+      string,
+      {
+        count: number;
+        leadTimes: number[];
+        sentBack: number;
+        types: Set<string>;
+      }
+    >();
 
     for (const r of source) {
       if (!r.editor || r.editor === 'Unknown') continue;
       if (!eMap.has(r.editor)) {
-        eMap.set(r.editor, { count: 0, leadTimes: [], sentBack: 0, types: new Set() });
+        eMap.set(r.editor, {
+          count: 0,
+          leadTimes: [],
+          sentBack: 0,
+          types: new Set(),
+        });
       }
       const e = eMap.get(r.editor)!;
       e.count++;
       e.types.add(r.contentType);
       if (r.status === 'Sent Back') e.sentBack++;
       if (r.publishTimestamp && r.date) {
-        const diff = (new Date(r.publishTimestamp).getTime() - new Date(r.date).getTime()) / 3600000;
+        const diff =
+          (new Date(r.publishTimestamp).getTime() -
+            new Date(r.date).getTime()) /
+          3600000;
         if (diff >= 0 && diff < 720) e.leadTimes.push(diff);
       }
     }
@@ -635,10 +751,16 @@ export class MsnProductionService {
         return {
           editor,
           articlesEdited: data.count,
-          avgTurnaroundHours: data.leadTimes.length > 0
-            ? Math.round(data.leadTimes[Math.floor(data.leadTimes.length / 2)] * 10) / 10
-            : 0,
-          sentBackRate: data.count > 0 ? Math.round((data.sentBack / data.count) * 1000) / 10 : 0,
+          avgTurnaroundHours:
+            data.leadTimes.length > 0
+              ? Math.round(
+                  data.leadTimes[Math.floor(data.leadTimes.length / 2)] * 10,
+                ) / 10
+              : 0,
+          sentBackRate:
+            data.count > 0
+              ? Math.round((data.sentBack / data.count) * 1000) / 10
+              : 0,
           contentTypes: [...data.types],
         };
       })
@@ -648,16 +770,24 @@ export class MsnProductionService {
   async getAllotterStats(params: MsnFilterParams): Promise<AllotterStats[]> {
     const allotment = await this.filterAllotment(params);
 
-    const aMap = new Map<string, {
-      volume: number; published: number;
-      feedCounts: Map<string, number>; writerCounts: Map<string, number>;
-    }>();
+    const aMap = new Map<
+      string,
+      {
+        volume: number;
+        published: number;
+        feedCounts: Map<string, number>;
+        writerCounts: Map<string, number>;
+      }
+    >();
 
     for (const r of allotment) {
       if (r.allottedBy === 'Unknown') continue;
       if (!aMap.has(r.allottedBy)) {
         aMap.set(r.allottedBy, {
-          volume: 0, published: 0, feedCounts: new Map(), writerCounts: new Map(),
+          volume: 0,
+          published: 0,
+          feedCounts: new Map(),
+          writerCounts: new Map(),
         });
       }
       const a = aMap.get(r.allottedBy)!;
@@ -669,12 +799,20 @@ export class MsnProductionService {
 
     return [...aMap.entries()]
       .map(([allottedBy, data]) => {
-        const topFeed = [...data.feedCounts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] || '';
-        const topWriter = [...data.writerCounts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] || '';
+        const topFeed =
+          [...data.feedCounts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ||
+          '';
+        const topWriter =
+          [...data.writerCounts.entries()].sort(
+            (a, b) => b[1] - a[1],
+          )[0]?.[0] || '';
         return {
           allottedBy,
           volume: data.volume,
-          publishedRate: data.volume > 0 ? Math.round((data.published / data.volume) * 1000) / 10 : 0,
+          publishedRate:
+            data.volume > 0
+              ? Math.round((data.published / data.volume) * 1000) / 10
+              : 0,
           avgLeadTimeHours: 0,
           topFeed,
           topWriter,
@@ -683,7 +821,10 @@ export class MsnProductionService {
       .sort((a, b) => b.volume - a.volume);
   }
 
-  async getContentMix(params: MsnFilterParams, granularity: string = 'week'): Promise<ContentMixEntry[]> {
+  async getContentMix(
+    params: MsnFilterParams,
+    granularity: string = 'week',
+  ): Promise<ContentMixEntry[]> {
     const source = await this.filterSource(params);
 
     const bucketKey = (dateStr: string | null): string => {
@@ -693,15 +834,21 @@ export class MsnProductionService {
       if (granularity === 'month') return dayStr.substring(0, 7);
       const day = d.getUTCDay();
       const diff = d.getUTCDate() - day + (day === 0 ? -6 : 1);
-      return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), diff)).toISOString().split('T')[0];
+      return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), diff))
+        .toISOString()
+        .split('T')[0];
     };
 
-    const buckets = new Map<string, { article: number; slideshow: number; ssAutomation: number }>();
+    const buckets = new Map<
+      string,
+      { article: number; slideshow: number; ssAutomation: number }
+    >();
 
     for (const r of source) {
       const key = bucketKey(r.date);
       if (key === 'unknown') continue;
-      if (!buckets.has(key)) buckets.set(key, { article: 0, slideshow: 0, ssAutomation: 0 });
+      if (!buckets.has(key))
+        buckets.set(key, { article: 0, slideshow: 0, ssAutomation: 0 });
       const b = buckets.get(key)!;
       if (r.contentType === 'Article') b.article++;
       else if (r.contentType === 'Slideshow') b.slideshow++;
@@ -715,14 +862,22 @@ export class MsnProductionService {
         return {
           period,
           ...counts,
-          articlePct: total > 0 ? Math.round((counts.article / total) * 1000) / 10 : 0,
-          slideshowPct: total > 0 ? Math.round((counts.slideshow / total) * 1000) / 10 : 0,
-          ssAutomationPct: total > 0 ? Math.round((counts.ssAutomation / total) * 1000) / 10 : 0,
+          articlePct:
+            total > 0 ? Math.round((counts.article / total) * 1000) / 10 : 0,
+          slideshowPct:
+            total > 0 ? Math.round((counts.slideshow / total) * 1000) / 10 : 0,
+          ssAutomationPct:
+            total > 0
+              ? Math.round((counts.ssAutomation / total) * 1000) / 10
+              : 0,
         };
       });
   }
 
-  async getHeatmap(params: MsnFilterParams, type: string = 'calendar'): Promise<HeatmapCell[]> {
+  async getHeatmap(
+    params: MsnFilterParams,
+    type: string = 'calendar',
+  ): Promise<HeatmapCell[]> {
     const source = await this.filterSource(params);
 
     if (type === 'feed-writer') {
@@ -755,7 +910,9 @@ export class MsnProductionService {
     });
   }
 
-  async getWriterDailyBreakdown(params: MsnFilterParams): Promise<DailyBreakdownResult> {
+  async getWriterDailyBreakdown(
+    params: MsnFilterParams,
+  ): Promise<DailyBreakdownResult> {
     const source = await this.filterSource(params);
 
     const dayMap = new Map<string, DailyBreakdownEntry>();
@@ -764,27 +921,50 @@ export class MsnProductionService {
       if (!r.date || r.writer === 'Unknown') continue;
       const key = `${r.writer}||${r.date}`;
       if (!dayMap.has(key)) {
-        dayMap.set(key, { name: r.writer, date: r.date, slides: 0, slideshows: 0, articles: 0, total: 0 });
+        dayMap.set(key, {
+          name: r.writer,
+          date: r.date,
+          slides: 0,
+          slideshows: 0,
+          articles: 0,
+          total: 0,
+        });
       }
       const entry = dayMap.get(key)!;
       if (r.contentType === 'Article') {
         entry.articles++;
         entry.total++;
-      } else if (r.contentType === 'Slideshow' || r.contentType === 'SS Automation') {
+      } else if (
+        r.contentType === 'Slideshow' ||
+        r.contentType === 'SS Automation'
+      ) {
         entry.slideshows++;
         entry.slides += r.numberOfSlides ?? 0;
         entry.total++;
       }
     }
 
-    const daily = [...dayMap.values()].sort((a, b) =>
-      a.date.localeCompare(b.date) || a.name.localeCompare(b.name),
+    const daily = [...dayMap.values()].sort(
+      (a, b) => a.date.localeCompare(b.date) || a.name.localeCompare(b.name),
     );
 
-    const personMap = new Map<string, { slides: number; slideshows: number; articles: number; days: Set<string> }>();
+    const personMap = new Map<
+      string,
+      {
+        slides: number;
+        slideshows: number;
+        articles: number;
+        days: Set<string>;
+      }
+    >();
     for (const d of daily) {
       if (!personMap.has(d.name)) {
-        personMap.set(d.name, { slides: 0, slideshows: 0, articles: 0, days: new Set() });
+        personMap.set(d.name, {
+          slides: 0,
+          slideshows: 0,
+          articles: 0,
+          days: new Set(),
+        });
       }
       const p = personMap.get(d.name)!;
       p.slides += d.slides;
@@ -793,33 +973,58 @@ export class MsnProductionService {
       p.days.add(d.date);
     }
 
-    const personalAverages: PersonAverage[] = [...personMap.entries()].map(([name, data]) => {
-      const days = Math.max(data.days.size, 1);
-      return {
-        name,
-        avgSlides: Math.round((data.slides / days) * 10) / 10,
-        avgSlideshows: Math.round((data.slideshows / days) * 10) / 10,
-        avgArticles: Math.round((data.articles / days) * 10) / 10,
-        avgTotal: Math.round(((data.slideshows + data.articles) / days) * 10) / 10,
-        activeDays: data.days.size,
-        totalSlides: data.slides,
-        totalSlideshows: data.slideshows,
-        totalArticles: data.articles,
-      };
-    }).sort((a, b) => b.avgTotal - a.avgTotal);
+    const personalAverages: PersonAverage[] = [...personMap.entries()]
+      .map(([name, data]) => {
+        const days = Math.max(data.days.size, 1);
+        return {
+          name,
+          avgSlides: Math.round((data.slides / days) * 10) / 10,
+          avgSlideshows: Math.round((data.slideshows / days) * 10) / 10,
+          avgArticles: Math.round((data.articles / days) * 10) / 10,
+          avgTotal:
+            Math.round(((data.slideshows + data.articles) / days) * 10) / 10,
+          activeDays: data.days.size,
+          totalSlides: data.slides,
+          totalSlideshows: data.slideshows,
+          totalArticles: data.articles,
+        };
+      })
+      .sort((a, b) => b.avgTotal - a.avgTotal);
 
     const totalWriters = Math.max(personalAverages.length, 1);
     const teamAverage = {
-      avgSlides: Math.round((personalAverages.reduce((s, p) => s + p.avgSlides, 0) / totalWriters) * 10) / 10,
-      avgSlideshows: Math.round((personalAverages.reduce((s, p) => s + p.avgSlideshows, 0) / totalWriters) * 10) / 10,
-      avgArticles: Math.round((personalAverages.reduce((s, p) => s + p.avgArticles, 0) / totalWriters) * 10) / 10,
-      avgTotal: Math.round((personalAverages.reduce((s, p) => s + p.avgTotal, 0) / totalWriters) * 10) / 10,
+      avgSlides:
+        Math.round(
+          (personalAverages.reduce((s, p) => s + p.avgSlides, 0) /
+            totalWriters) *
+            10,
+        ) / 10,
+      avgSlideshows:
+        Math.round(
+          (personalAverages.reduce((s, p) => s + p.avgSlideshows, 0) /
+            totalWriters) *
+            10,
+        ) / 10,
+      avgArticles:
+        Math.round(
+          (personalAverages.reduce((s, p) => s + p.avgArticles, 0) /
+            totalWriters) *
+            10,
+        ) / 10,
+      avgTotal:
+        Math.round(
+          (personalAverages.reduce((s, p) => s + p.avgTotal, 0) /
+            totalWriters) *
+            10,
+        ) / 10,
     };
 
     return { daily, personalAverages, teamAverage };
   }
 
-  async getEditorDailyBreakdown(params: MsnFilterParams): Promise<DailyBreakdownResult> {
+  async getEditorDailyBreakdown(
+    params: MsnFilterParams,
+  ): Promise<DailyBreakdownResult> {
     const source = await this.filterSource(params);
 
     const dayMap = new Map<string, DailyBreakdownEntry>();
@@ -828,27 +1033,50 @@ export class MsnProductionService {
       if (!r.date || !r.editor || r.editor === 'Unknown') continue;
       const key = `${r.editor}||${r.date}`;
       if (!dayMap.has(key)) {
-        dayMap.set(key, { name: r.editor, date: r.date, slides: 0, slideshows: 0, articles: 0, total: 0 });
+        dayMap.set(key, {
+          name: r.editor,
+          date: r.date,
+          slides: 0,
+          slideshows: 0,
+          articles: 0,
+          total: 0,
+        });
       }
       const entry = dayMap.get(key)!;
       if (r.contentType === 'Article') {
         entry.articles++;
         entry.total++;
-      } else if (r.contentType === 'Slideshow' || r.contentType === 'SS Automation') {
+      } else if (
+        r.contentType === 'Slideshow' ||
+        r.contentType === 'SS Automation'
+      ) {
         entry.slideshows++;
         entry.slides += r.numberOfSlides ?? 0;
         entry.total++;
       }
     }
 
-    const daily = [...dayMap.values()].sort((a, b) =>
-      a.date.localeCompare(b.date) || a.name.localeCompare(b.name),
+    const daily = [...dayMap.values()].sort(
+      (a, b) => a.date.localeCompare(b.date) || a.name.localeCompare(b.name),
     );
 
-    const personMap = new Map<string, { slides: number; slideshows: number; articles: number; days: Set<string> }>();
+    const personMap = new Map<
+      string,
+      {
+        slides: number;
+        slideshows: number;
+        articles: number;
+        days: Set<string>;
+      }
+    >();
     for (const d of daily) {
       if (!personMap.has(d.name)) {
-        personMap.set(d.name, { slides: 0, slideshows: 0, articles: 0, days: new Set() });
+        personMap.set(d.name, {
+          slides: 0,
+          slideshows: 0,
+          articles: 0,
+          days: new Set(),
+        });
       }
       const p = personMap.get(d.name)!;
       p.slides += d.slides;
@@ -857,27 +1085,50 @@ export class MsnProductionService {
       p.days.add(d.date);
     }
 
-    const personalAverages: PersonAverage[] = [...personMap.entries()].map(([name, data]) => {
-      const days = Math.max(data.days.size, 1);
-      return {
-        name,
-        avgSlides: Math.round((data.slides / days) * 10) / 10,
-        avgSlideshows: Math.round((data.slideshows / days) * 10) / 10,
-        avgArticles: Math.round((data.articles / days) * 10) / 10,
-        avgTotal: Math.round(((data.slideshows + data.articles) / days) * 10) / 10,
-        activeDays: data.days.size,
-        totalSlides: data.slides,
-        totalSlideshows: data.slideshows,
-        totalArticles: data.articles,
-      };
-    }).sort((a, b) => b.avgTotal - a.avgTotal);
+    const personalAverages: PersonAverage[] = [...personMap.entries()]
+      .map(([name, data]) => {
+        const days = Math.max(data.days.size, 1);
+        return {
+          name,
+          avgSlides: Math.round((data.slides / days) * 10) / 10,
+          avgSlideshows: Math.round((data.slideshows / days) * 10) / 10,
+          avgArticles: Math.round((data.articles / days) * 10) / 10,
+          avgTotal:
+            Math.round(((data.slideshows + data.articles) / days) * 10) / 10,
+          activeDays: data.days.size,
+          totalSlides: data.slides,
+          totalSlideshows: data.slideshows,
+          totalArticles: data.articles,
+        };
+      })
+      .sort((a, b) => b.avgTotal - a.avgTotal);
 
     const totalEditors = Math.max(personalAverages.length, 1);
     const teamAverage = {
-      avgSlides: Math.round((personalAverages.reduce((s, p) => s + p.avgSlides, 0) / totalEditors) * 10) / 10,
-      avgSlideshows: Math.round((personalAverages.reduce((s, p) => s + p.avgSlideshows, 0) / totalEditors) * 10) / 10,
-      avgArticles: Math.round((personalAverages.reduce((s, p) => s + p.avgArticles, 0) / totalEditors) * 10) / 10,
-      avgTotal: Math.round((personalAverages.reduce((s, p) => s + p.avgTotal, 0) / totalEditors) * 10) / 10,
+      avgSlides:
+        Math.round(
+          (personalAverages.reduce((s, p) => s + p.avgSlides, 0) /
+            totalEditors) *
+            10,
+        ) / 10,
+      avgSlideshows:
+        Math.round(
+          (personalAverages.reduce((s, p) => s + p.avgSlideshows, 0) /
+            totalEditors) *
+            10,
+        ) / 10,
+      avgArticles:
+        Math.round(
+          (personalAverages.reduce((s, p) => s + p.avgArticles, 0) /
+            totalEditors) *
+            10,
+        ) / 10,
+      avgTotal:
+        Math.round(
+          (personalAverages.reduce((s, p) => s + p.avgTotal, 0) /
+            totalEditors) *
+            10,
+        ) / 10,
     };
 
     return { daily, personalAverages, teamAverage };
@@ -901,7 +1152,9 @@ export class MsnProductionService {
     );
 
     const publishedWithoutAllotment = publishedSource
-      .filter((r) => r.title && !allotmentTitles.has(r.title.toLowerCase().trim()))
+      .filter(
+        (r) => r.title && !allotmentTitles.has(r.title.toLowerCase().trim()),
+      )
       .slice(0, 100)
       .map((r) => ({
         title: r.title,

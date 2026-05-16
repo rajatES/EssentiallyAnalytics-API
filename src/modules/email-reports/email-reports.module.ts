@@ -16,22 +16,22 @@ import { SocialProfile } from '../facebook/entities/SocialProfile.entity';
 import { SocialPost } from '../facebook/entities/SocialPost.entity';
 
 @Module({
-    imports: [
-        TypeOrmModule.forFeature([
-            ReportRecipient,
-            // Entities from other modules — we register repos here since
-            // autoLoadEntities handles schema discovery globally
-            DailyAnalytics,
-            PageMapping,
-            DailyRevenue,
-            RevenueMapping,
-            AnalyticsSnapshot,
-            SocialProfile,
-            SocialPost,
-        ]),
-    ],
-    controllers: [EmailReportsController],
-    providers: [EmailReportsService, CsvGeneratorService],
-    exports: [EmailReportsService],
+  imports: [
+    TypeOrmModule.forFeature([
+      ReportRecipient,
+      // Entities from other modules — we register repos here since
+      // autoLoadEntities handles schema discovery globally
+      DailyAnalytics,
+      PageMapping,
+      DailyRevenue,
+      RevenueMapping,
+      AnalyticsSnapshot,
+      SocialProfile,
+      SocialPost,
+    ]),
+  ],
+  controllers: [EmailReportsController],
+  providers: [EmailReportsService, CsvGeneratorService],
+  exports: [EmailReportsService],
 })
 export class EmailReportsModule {}

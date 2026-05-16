@@ -57,8 +57,8 @@ function matchHeaders<K extends string>(
   logger: Logger,
   sheetLabel: string,
 ): ColumnMap<K> | null {
-  const headers = headerRow.map((h) =>
-    h?.toString()?.trim()?.toLowerCase() ?? '',
+  const headers = headerRow.map(
+    (h) => h?.toString()?.trim()?.toLowerCase() ?? '',
   );
 
   const map: Partial<ColumnMap<K>> = {};
@@ -82,9 +82,7 @@ function matchHeaders<K extends string>(
     return null;
   }
 
-  logger.log(
-    `${sheetLabel}: column mapping resolved → ${JSON.stringify(map)}`,
-  );
+  logger.log(`${sheetLabel}: column mapping resolved → ${JSON.stringify(map)}`);
   return map as ColumnMap<K>;
 }
 
@@ -99,8 +97,14 @@ const SOURCE_HEADER_PATTERNS: { key: SourceColumnKey; match: RegExp }[] = [
   { key: 'writer', match: /^writer$/i },
   { key: 'editor', match: /^editor$/i },
   { key: 'status', match: /^status$/i },
-  { key: 'slides', match: /^(no\.?\s*of\s*slides|slides|number\s*of\s*slides)$/i },
-  { key: 'publishTimestamp', match: /^(publish\s*(time|timestamp)|published?\s*at|timestamp)$/i },
+  {
+    key: 'slides',
+    match: /^(no\.?\s*of\s*slides|slides|number\s*of\s*slides)$/i,
+  },
+  {
+    key: 'publishTimestamp',
+    match: /^(publish\s*(time|timestamp)|published?\s*at|timestamp)$/i,
+  },
   { key: 'title', match: /^title$/i },
 ];
 
@@ -115,7 +119,10 @@ const ALLOTMENT_HEADER_PATTERNS: {
   { key: 'writer', match: /^writer$/i },
   { key: 'contentType', match: /^(content\s*type|type)$/i },
   { key: 'status', match: /^status$/i },
-  { key: 'slides', match: /^(no\.?\s*of\s*slides|slides|number\s*of\s*slides)$/i },
+  {
+    key: 'slides',
+    match: /^(no\.?\s*of\s*slides|slides|number\s*of\s*slides)$/i,
+  },
   { key: 'title', match: /^title$/i },
 ];
 
@@ -136,7 +143,9 @@ export class SheetsSyncService {
     const tabName = process.env.MSN_SOURCE_TAB_NAME || 'Sheet1';
 
     if (!sheetId) {
-      this.logger.warn('MSN_SOURCE_SHEET_ID not configured, skipping source sheet sync');
+      this.logger.warn(
+        'MSN_SOURCE_SHEET_ID not configured, skipping source sheet sync',
+      );
       return [];
     }
 
@@ -160,7 +169,9 @@ export class SheetsSyncService {
         'Source sheet',
       );
       if (!colMap) {
-        this.logger.error('Source sheet: aborting sync — column mapping failed');
+        this.logger.error(
+          'Source sheet: aborting sync — column mapping failed',
+        );
         return [];
       }
 
@@ -177,7 +188,9 @@ export class SheetsSyncService {
       }
 
       if (skipped > 0) {
-        this.logger.warn(`Source sheet: skipped ${skipped} invalid/incomplete rows`);
+        this.logger.warn(
+          `Source sheet: skipped ${skipped} invalid/incomplete rows`,
+        );
       }
 
       return parsed;
@@ -191,10 +204,13 @@ export class SheetsSyncService {
 
   async fetchAllotmentSheet(): Promise<ParsedAllotmentRow[]> {
     const sheetId = process.env.MSN_ALLOTMENT_SHEET_ID;
-    const tabName = process.env.MSN_ALLOTMENT_TAB_NAME || 'Master Allotment Sheet DB';
+    const tabName =
+      process.env.MSN_ALLOTMENT_TAB_NAME || 'Master Allotment Sheet DB';
 
     if (!sheetId) {
-      this.logger.warn('MSN_ALLOTMENT_SHEET_ID not configured, skipping allotment sheet sync');
+      this.logger.warn(
+        'MSN_ALLOTMENT_SHEET_ID not configured, skipping allotment sheet sync',
+      );
       return [];
     }
 
@@ -218,7 +234,9 @@ export class SheetsSyncService {
         'Allotment sheet',
       );
       if (!colMap) {
-        this.logger.error('Allotment sheet: aborting sync — column mapping failed');
+        this.logger.error(
+          'Allotment sheet: aborting sync — column mapping failed',
+        );
         return [];
       }
 
@@ -235,7 +253,9 @@ export class SheetsSyncService {
       }
 
       if (skipped > 0) {
-        this.logger.warn(`Allotment sheet: skipped ${skipped} invalid/incomplete rows`);
+        this.logger.warn(
+          `Allotment sheet: skipped ${skipped} invalid/incomplete rows`,
+        );
       }
 
       return parsed;
@@ -262,7 +282,10 @@ export class SheetsSyncService {
       numberOfSlides = 1;
     }
     // Slideshows with 0 slides is a data entry error — treat as unknown
-    if ((contentType === 'Slideshow' || contentType === 'SS Automation') && numberOfSlides === 0) {
+    if (
+      (contentType === 'Slideshow' || contentType === 'SS Automation') &&
+      numberOfSlides === 0
+    ) {
       numberOfSlides = null;
     }
 
@@ -299,7 +322,10 @@ export class SheetsSyncService {
     if (contentType === 'Article') {
       slides = 1;
     }
-    if ((contentType === 'Slideshow' || contentType === 'SS Automation') && slides === 0) {
+    if (
+      (contentType === 'Slideshow' || contentType === 'SS Automation') &&
+      slides === 0
+    ) {
       slides = null;
     }
 

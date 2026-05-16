@@ -82,10 +82,6 @@ export class AuthController {
     }
 
     const { email, password, role } = body;
-    return this.authService.createUser(
-      email,
-      password,
-      role || UserRole.ADMIN,
-    );
+    return this.authService.createUser(email, password, role || UserRole.ADMIN);
   }
 }

@@ -16,10 +16,15 @@ export class ReportSportsMappingsService {
   }
 
   /** Upsert a mapping row for a given profileId (idempotent). */
-  async upsert(profileId: string, pageName: string, sport: string | null): Promise<ReportSportsMapping> {
-    const normalizedSport = (typeof sport === 'string' && sport.trim()) ? sport.trim() : null;
+  async upsert(
+    profileId: string,
+    pageName: string,
+    sport: string | null,
+  ): Promise<ReportSportsMapping> {
+    const normalizedSport =
+      typeof sport === 'string' && sport.trim() ? sport.trim() : null;
 
-    let existing = await this.mappingRepo.findOneBy({ profileId });
+    const existing = await this.mappingRepo.findOneBy({ profileId });
 
     if (existing) {
       existing.pageName = pageName;
@@ -36,15 +41,23 @@ export class ReportSportsMappingsService {
   }
 
   /** Update the sport field for a single mapping by ID. */
-  async updateSport(id: number, sport: string | null): Promise<ReportSportsMapping[]> {
-    const normalizedSport = (typeof sport === 'string' && sport.trim()) ? sport.trim() : null;
+  async updateSport(
+    id: number,
+    sport: string | null,
+  ): Promise<ReportSportsMapping[]> {
+    const normalizedSport =
+      typeof sport === 'string' && sport.trim() ? sport.trim() : null;
     await this.mappingRepo.update(id, { sport: normalizedSport });
     return this.findAll();
   }
 
   /** Batch-update the sport field for multiple IDs at once. */
-  async batchUpdateSport(ids: number[], sport: string | null): Promise<ReportSportsMapping[]> {
-    const normalizedSport = (typeof sport === 'string' && sport.trim()) ? sport.trim() : null;
+  async batchUpdateSport(
+    ids: number[],
+    sport: string | null,
+  ): Promise<ReportSportsMapping[]> {
+    const normalizedSport =
+      typeof sport === 'string' && sport.trim() ? sport.trim() : null;
 
     if (ids.length > 0) {
       await this.mappingRepo
@@ -60,7 +73,9 @@ export class ReportSportsMappingsService {
 
   /** Ensure all active social profiles have a mapping row.
    *  Called lazily from the controller to auto-populate from the profiles list. */
-  async syncFromProfiles(profiles: { profileId: string; name: string }[]): Promise<void> {
+  async syncFromProfiles(
+    profiles: { profileId: string; name: string }[],
+  ): Promise<void> {
     const existing = await this.mappingRepo.find({ select: ['profileId'] });
     const existingIds = new Set(existing.map((m) => m.profileId));
 

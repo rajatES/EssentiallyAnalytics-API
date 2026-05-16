@@ -102,7 +102,7 @@ export const fetchDailySnapshot = async (
       const msgRes = await axios.get(msgUrl);
       if (msgRes.data?.data)
         aggregatedData = [...aggregatedData, ...msgRes.data.data];
-    } catch (msgError: any) { }
+    } catch (msgError: any) {}
   } else if (platform === 'instagram') {
     const totalValueMetrics = [
       'views',
@@ -397,9 +397,19 @@ export interface SegregatedRevenueDay {
  * Handles microAmount objects automatically.
  */
 function normaliseCMPValue(raw: Record<string, any>): {
-  bonus: number; photo: number; reel: number; story: number; text: number; total: number;
+  bonus: number;
+  photo: number;
+  reel: number;
+  story: number;
+  text: number;
+  total: number;
 } {
-  let bonus = 0, photo = 0, reel = 0, story = 0, text = 0, total = 0;
+  let bonus = 0,
+    photo = 0,
+    reel = 0,
+    story = 0,
+    text = 0,
+    total = 0;
 
   for (const [rawKey, rawVal] of Object.entries(raw)) {
     const k = rawKey.toLowerCase();
@@ -415,19 +425,28 @@ function normaliseCMPValue(raw: Record<string, any>): {
     total += v;
 
     if (k.includes('bonus') || k.includes('extra') || k.includes('performance'))
-                                                                      bonus += v;
-    else if (k.includes('reel'))                                      reel  += v;
-    else if (k.includes('video') || k.includes('in_stream') || k.includes('in-stream'))
-                                                                      reel  += v;
-    else if (k.includes('story') || k.includes('stories') || k.includes('interstitial'))
-                                                                      story += v;
-    else if (k.includes('photo') || k.includes('image'))              photo += v;
-    else if (k.includes('text') || k.includes('short_form'))          text  += v;
+      bonus += v;
+    else if (k.includes('reel')) reel += v;
+    else if (
+      k.includes('video') ||
+      k.includes('in_stream') ||
+      k.includes('in-stream')
+    )
+      reel += v;
+    else if (
+      k.includes('story') ||
+      k.includes('stories') ||
+      k.includes('interstitial')
+    )
+      story += v;
+    else if (k.includes('photo') || k.includes('image')) photo += v;
+    else if (k.includes('text') || k.includes('short_form')) text += v;
     else if (k === 'microamount') {
       // Single-total response (no breakdown) — counted in `total` only.
-    }
-    else {
-      console.warn(`[Meta API] Unknown CMP earning type "${rawKey}" = ${v} — counted in total only`);
+    } else {
+      console.warn(
+        `[Meta API] Unknown CMP earning type "${rawKey}" = ${v} — counted in total only`,
+      );
     }
   }
 
@@ -451,7 +470,15 @@ function parseSegregatedValues(values: any[]): SegregatedRevenueDay[] {
     // Meta does not expose bonus in this shape, so bonus stays 0 — total only.
     if (v && typeof v === 'object' && 'microAmount' in v) {
       const n = toDollars(v);
-      out.push({ date: dateStr, bonus: 0, photo: 0, reel: 0, story: 0, text: 0, total: n });
+      out.push({
+        date: dateStr,
+        bonus: 0,
+        photo: 0,
+        reel: 0,
+        story: 0,
+        text: 0,
+        total: n,
+      });
     }
     // Object with content-type keys (actual breakdown)
     else if (v && typeof v === 'object' && !Array.isArray(v)) {
@@ -461,7 +488,15 @@ function parseSegregatedValues(values: any[]): SegregatedRevenueDay[] {
     // Plain number → already in dollars; single total, no breakdown available.
     else if (typeof v === 'number' || typeof v === 'string') {
       const n = Number(v) || 0;
-      out.push({ date: dateStr, bonus: 0, photo: 0, reel: 0, story: 0, text: 0, total: n });
+      out.push({
+        date: dateStr,
+        bonus: 0,
+        photo: 0,
+        reel: 0,
+        story: 0,
+        text: 0,
+        total: n,
+      });
     }
   }
   return out;
@@ -499,7 +534,10 @@ export const fetchSegregatedRevenue = async (
 
   for (const chunk of chunks) {
     const chunkResults = await fetchSegregatedRevenueChunk(
-      profileId, accessToken, chunk.since, chunk.until,
+      profileId,
+      accessToken,
+      chunk.since,
+      chunk.until,
     );
     allResults.push(...chunkResults);
   }
@@ -544,7 +582,6 @@ async function fetchSegregatedRevenueChunk(
   sinceUnix: number,
   untilUnix: number,
 ): Promise<SegregatedRevenueDay[]> {
-
   // Helper: a breakdown response is only "useful" if it actually segregates
   // revenue across at least one of photo/reel/story/text. If it's all dumped
   // into `total` with zero per-type buckets, the API returned an aggregate-only
@@ -565,36 +602,49 @@ async function fetchSegregatedRevenueChunk(
         period: 'day',
         breakdown: 'earning_source',
         access_token: accessToken,
-      }
+      },
     });
-    const dataEntries = response.data?.data || (response.data ? [response.data] : []);
+    const dataEntries =
+      response.data?.data || (response.data ? [response.data] : []);
     if (dataEntries.length > 0) {
       const result = parseEarningSourceResponse(dataEntries);
       if (result.length > 0 && isSegregated(result)) {
-         console.log(`[Meta API] Segregated breakdown parsed for ${profileId}: ${result.length} days (Attempt 0.1 POST)`);
-         return result;
+        console.log(
+          `[Meta API] Segregated breakdown parsed for ${profileId}: ${result.length} days (Attempt 0.1 POST)`,
+        );
+        return result;
       }
     }
   } catch (err: any) {
-    console.warn(`[Meta API] Attempt 0.1 (POST direct edge) failed for ${profileId}:`, err.response?.data?.error?.message || err.message);
+    console.warn(
+      `[Meta API] Attempt 0.1 (POST direct edge) failed for ${profileId}:`,
+      err.response?.data?.error?.message || err.message,
+    );
   }
 
   // --- Attempt 0.2: GET /{page_id}/content_monetization_earnings (direct edge) ---
   try {
-    const url = `${BASE_URL}/${profileId}/content_monetization_earnings` +
-                `?since=${sinceUnix}&until=${untilUnix}&period=day&breakdown=earning_source&access_token=${accessToken}`;
+    const url =
+      `${BASE_URL}/${profileId}/content_monetization_earnings` +
+      `?since=${sinceUnix}&until=${untilUnix}&period=day&breakdown=earning_source&access_token=${accessToken}`;
 
     const response = await axios.get(url);
-    const dataEntries = response.data?.data || (response.data ? [response.data] : []);
+    const dataEntries =
+      response.data?.data || (response.data ? [response.data] : []);
     if (dataEntries.length > 0) {
       const result = parseEarningSourceResponse(dataEntries);
       if (result.length > 0 && isSegregated(result)) {
-         console.log(`[Meta API] Segregated breakdown parsed for ${profileId}: ${result.length} days (Attempt 0.2 GET)`);
-         return result;
+        console.log(
+          `[Meta API] Segregated breakdown parsed for ${profileId}: ${result.length} days (Attempt 0.2 GET)`,
+        );
+        return result;
       }
     }
   } catch (err: any) {
-    console.warn(`[Meta API] Attempt 0.2 (GET direct edge) failed for ${profileId}:`, err.response?.data?.error?.message || err.message);
+    console.warn(
+      `[Meta API] Attempt 0.2 (GET direct edge) failed for ${profileId}:`,
+      err.response?.data?.error?.message || err.message,
+    );
   }
 
   // --- Attempt 1: insights?metric=content_monetization_earnings&breakdown=earning_source ---
@@ -699,7 +749,12 @@ async function fetchSegregatedRevenueChunk(
   console.warn(
     `[Meta API] All segregated attempts failed for ${profileId}, using legacy total`,
   );
-  const totalRevenue = await fetchDailyRevenue(profileId, accessToken, sinceUnix, untilUnix);
+  const totalRevenue = await fetchDailyRevenue(
+    profileId,
+    accessToken,
+    sinceUnix,
+    untilUnix,
+  );
   // Legacy fallback: we only have a single aggregate per day with no breakdown.
   // Meta does not expose a bonus figure, so bonus MUST stay 0 — the unsegregated
   // lump sum lives in `total` only.
@@ -734,21 +789,29 @@ async function fetchSegregatedRevenueChunk(
  *
  * In both shapes, we merge per-date into SegregatedRevenueDay records.
  */
-function parseEarningSourceResponse(dataEntries: any[]): SegregatedRevenueDay[] {
+function parseEarningSourceResponse(
+  dataEntries: any[],
+): SegregatedRevenueDay[] {
   const dayMap = new Map<string, SegregatedRevenueDay>();
 
   for (const entry of dataEntries) {
     // Determine if it's a flat array of values or nested under .values
-    const valuesArray = (entry.values && Array.isArray(entry.values)) ? entry.values : [entry];
+    const valuesArray =
+      entry.values && Array.isArray(entry.values) ? entry.values : [entry];
 
     // Shape A: entry-level label (used when there are multiple entries)
     const entryLabel = (
-      entry.title || entry.name || entry.description || entry.id || ''
+      entry.title ||
+      entry.name ||
+      entry.description ||
+      entry.id ||
+      ''
     ).toLowerCase();
 
     for (const val of valuesArray) {
-      if (val.value === undefined || (!val.end_time && !val.time && !val.date)) continue;
-      
+      if (val.value === undefined || (!val.end_time && !val.time && !val.date))
+        continue;
+
       const timeStr = val.end_time || val.time || val.date;
       const actualDate = new Date(timeStr);
       actualDate.setDate(actualDate.getDate() - 1);
@@ -757,7 +820,13 @@ function parseEarningSourceResponse(dataEntries: any[]): SegregatedRevenueDay[] 
 
       if (!dayMap.has(dateStr)) {
         dayMap.set(dateStr, {
-          date: dateStr, bonus: 0, photo: 0, reel: 0, story: 0, text: 0, total: 0,
+          date: dateStr,
+          bonus: 0,
+          photo: 0,
+          reel: 0,
+          story: 0,
+          text: 0,
+          total: 0,
         });
       }
       const day = dayMap.get(dateStr)!;
@@ -766,7 +835,11 @@ function parseEarningSourceResponse(dataEntries: any[]): SegregatedRevenueDay[] 
       // Shape C: use `content_type`, `earning_source` or `monetization_tool` sibling field.
       // Shape A: use the entry-level title/name.
       const sourceLabel = (
-        val.content_type || val.earning_source || val.monetization_tool || entryLabel || ''
+        val.content_type ||
+        val.earning_source ||
+        val.monetization_tool ||
+        entryLabel ||
+        ''
       ).toLowerCase();
 
       // Map the label to one of our canonical buckets and always accumulate
@@ -788,7 +861,11 @@ function parseEarningSourceResponse(dataEntries: any[]): SegregatedRevenueDay[] 
  *   "in_stream", "in-stream", "extra", "performance_bonus",
  *   "photos, text & stories", "content_monetization"
  */
-function addAmountToBucket(day: SegregatedRevenueDay, label: string, amount: number) {
+function addAmountToBucket(
+  day: SegregatedRevenueDay,
+  label: string,
+  amount: number,
+) {
   if (amount === 0) return;
 
   // Every amount contributes to the page's total, even if we can't classify it.
@@ -796,31 +873,46 @@ function addAmountToBucket(day: SegregatedRevenueDay, label: string, amount: num
   // stay out of the per-type buckets but must still be counted in `total`.
   day.total += amount;
 
-  if (label.includes('bonus') || label.includes('extra') || label.includes('performance'))
-                                                          day.bonus += amount;
-  else if (label === 'reel' || label.includes('reel'))    day.reel  += amount;
-  else if (label.includes('video') || label.includes('in_stream') || label.includes('in-stream'))
-                                                          day.reel  += amount;
+  if (
+    label.includes('bonus') ||
+    label.includes('extra') ||
+    label.includes('performance')
+  )
+    day.bonus += amount;
+  else if (label === 'reel' || label.includes('reel')) day.reel += amount;
+  else if (
+    label.includes('video') ||
+    label.includes('in_stream') ||
+    label.includes('in-stream')
+  )
+    day.reel += amount;
   else if (label.includes('photos, text') || label.includes('photo, text')) {
     // Meta sometimes groups "Photos, text & stories" as one label.
     // Assign to photo as primary bucket.
     day.photo += amount;
-  }
-  else if (label === 'image' || label.includes('photo') || label.includes('image'))
-                                                          day.photo += amount;
+  } else if (
+    label === 'image' ||
+    label.includes('photo') ||
+    label.includes('image')
+  )
+    day.photo += amount;
   else if (label.includes('story') || label.includes('stories'))
-                                                          day.story += amount;
-  else if (label === 'text' || label.includes('text') || label.includes('short_form'))
-                                                          day.text  += amount;
+    day.story += amount;
+  else if (
+    label === 'text' ||
+    label.includes('text') ||
+    label.includes('short_form')
+  )
+    day.text += amount;
   else if (label.includes('content_monetization')) {
     // monetization_tool="content_monetization" — this is the umbrella tool,
     // NOT a content type and NOT a bonus. Meta does not expose a bonus figure.
     // Leave it in `total` only; it's an unsegregated lump sum.
-  }
-  else {
+  } else {
     // Unknown label — keep in total only. Do NOT dump into bonus, because
     // Meta's API does not actually report a bonus figure.
-    console.warn(`[Meta API] Unknown earning source "${label}" = $${amount.toFixed(4)} — counted in total only`);
+    console.warn(
+      `[Meta API] Unknown earning source "${label}" = $${amount.toFixed(4)} — counted in total only`,
+    );
   }
 }
-

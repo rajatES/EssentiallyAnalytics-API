@@ -15,7 +15,9 @@ export class ReportSportsMappingsController {
    *  Body: { profiles: { profileId: string; name: string }[] }
    */
   @Post('sync')
-  async syncProfiles(@Body() body: { profiles: { profileId: string; name: string }[] }) {
+  async syncProfiles(
+    @Body() body: { profiles: { profileId: string; name: string }[] },
+  ) {
     await this.service.syncFromProfiles(body.profiles || []);
     return this.service.findAll();
   }
@@ -28,7 +30,9 @@ export class ReportSportsMappingsController {
    * path segment "batch" rather than treating it as a numeric :id param.
    */
   @Patch('batch/sport')
-  async batchUpdateSport(@Body() body: { ids: number[]; sport: string | null }) {
+  async batchUpdateSport(
+    @Body() body: { ids: number[]; sport: string | null },
+  ) {
     const { ids, sport } = body;
     if (!Array.isArray(ids) || ids.length === 0) return this.service.findAll();
     return this.service.batchUpdateSport(ids, sport);
@@ -36,7 +40,10 @@ export class ReportSportsMappingsController {
 
   /** PATCH /v1/report-sports-mappings/:id — update sport for a single mapping */
   @Patch(':id')
-  async updateSport(@Param('id') id: string, @Body() body: { sport: string | null }) {
+  async updateSport(
+    @Param('id') id: string,
+    @Body() body: { sport: string | null },
+  ) {
     return this.service.updateSport(Number(id), body.sport);
   }
 }

@@ -14,7 +14,9 @@ export class MsnProductionController {
       feeds: query.feeds ? query.feeds.split(',') : undefined,
       writers: query.writers ? query.writers.split(',') : undefined,
       editors: query.editors ? query.editors.split(',') : undefined,
-      contentTypes: query.contentTypes ? query.contentTypes.split(',') : undefined,
+      contentTypes: query.contentTypes
+        ? query.contentTypes.split(',')
+        : undefined,
       statuses: query.statuses ? query.statuses.split(',') : undefined,
       allotters: query.allotters ? query.allotters.split(',') : undefined,
     };
@@ -49,7 +51,17 @@ export class MsnProductionController {
     @Query('allotters') allotters: string,
   ) {
     return this.service.getOverview(
-      this.parseFilters({ startDate, endDate, brands, feeds, writers, editors, contentTypes, statuses, allotters }),
+      this.parseFilters({
+        startDate,
+        endDate,
+        brands,
+        feeds,
+        writers,
+        editors,
+        contentTypes,
+        statuses,
+        allotters,
+      }),
     );
   }
 
@@ -67,7 +79,17 @@ export class MsnProductionController {
     @Query('allotters') allotters: string,
   ) {
     return this.service.getTimeseries(
-      this.parseFilters({ startDate, endDate, brands, feeds, writers, editors, contentTypes, statuses, allotters }),
+      this.parseFilters({
+        startDate,
+        endDate,
+        brands,
+        feeds,
+        writers,
+        editors,
+        contentTypes,
+        statuses,
+        allotters,
+      }),
       granularity || 'day',
     );
   }
@@ -85,7 +107,17 @@ export class MsnProductionController {
     @Query('allotters') allotters: string,
   ) {
     return this.service.getFunnel(
-      this.parseFilters({ startDate, endDate, brands, feeds, writers, editors, contentTypes, statuses, allotters }),
+      this.parseFilters({
+        startDate,
+        endDate,
+        brands,
+        feeds,
+        writers,
+        editors,
+        contentTypes,
+        statuses,
+        allotters,
+      }),
     );
   }
 
@@ -102,7 +134,17 @@ export class MsnProductionController {
     @Query('allotters') allotters: string,
   ) {
     return this.service.getStatusMix(
-      this.parseFilters({ startDate, endDate, brands, feeds, writers, editors, contentTypes, statuses, allotters }),
+      this.parseFilters({
+        startDate,
+        endDate,
+        brands,
+        feeds,
+        writers,
+        editors,
+        contentTypes,
+        statuses,
+        allotters,
+      }),
     );
   }
 
@@ -119,7 +161,17 @@ export class MsnProductionController {
     @Query('allotters') allotters: string,
   ) {
     return this.service.getFeedStats(
-      this.parseFilters({ startDate, endDate, brands, feeds, writers, editors, contentTypes, statuses, allotters }),
+      this.parseFilters({
+        startDate,
+        endDate,
+        brands,
+        feeds,
+        writers,
+        editors,
+        contentTypes,
+        statuses,
+        allotters,
+      }),
     );
   }
 
@@ -136,7 +188,17 @@ export class MsnProductionController {
     @Query('allotters') allotters: string,
   ) {
     return this.service.getWriterStats(
-      this.parseFilters({ startDate, endDate, brands, feeds, writers, editors, contentTypes, statuses, allotters }),
+      this.parseFilters({
+        startDate,
+        endDate,
+        brands,
+        feeds,
+        writers,
+        editors,
+        contentTypes,
+        statuses,
+        allotters,
+      }),
     );
   }
 
@@ -153,7 +215,17 @@ export class MsnProductionController {
     @Query('allotters') allotters: string,
   ) {
     return this.service.getEditorStats(
-      this.parseFilters({ startDate, endDate, brands, feeds, writers, editors, contentTypes, statuses, allotters }),
+      this.parseFilters({
+        startDate,
+        endDate,
+        brands,
+        feeds,
+        writers,
+        editors,
+        contentTypes,
+        statuses,
+        allotters,
+      }),
     );
   }
 
@@ -170,7 +242,17 @@ export class MsnProductionController {
     @Query('allotters') allotters: string,
   ) {
     return this.service.getAllotterStats(
-      this.parseFilters({ startDate, endDate, brands, feeds, writers, editors, contentTypes, statuses, allotters }),
+      this.parseFilters({
+        startDate,
+        endDate,
+        brands,
+        feeds,
+        writers,
+        editors,
+        contentTypes,
+        statuses,
+        allotters,
+      }),
     );
   }
 
@@ -188,7 +270,17 @@ export class MsnProductionController {
     @Query('allotters') allotters: string,
   ) {
     return this.service.getContentMix(
-      this.parseFilters({ startDate, endDate, brands, feeds, writers, editors, contentTypes, statuses, allotters }),
+      this.parseFilters({
+        startDate,
+        endDate,
+        brands,
+        feeds,
+        writers,
+        editors,
+        contentTypes,
+        statuses,
+        allotters,
+      }),
       granularity || 'week',
     );
   }
@@ -207,7 +299,17 @@ export class MsnProductionController {
     @Query('allotters') allotters: string,
   ) {
     return this.service.getHeatmap(
-      this.parseFilters({ startDate, endDate, brands, feeds, writers, editors, contentTypes, statuses, allotters }),
+      this.parseFilters({
+        startDate,
+        endDate,
+        brands,
+        feeds,
+        writers,
+        editors,
+        contentTypes,
+        statuses,
+        allotters,
+      }),
       type || 'calendar',
     );
   }
@@ -225,7 +327,17 @@ export class MsnProductionController {
     @Query('allotters') allotters: string,
   ) {
     return this.service.getWriterDailyBreakdown(
-      this.parseFilters({ startDate, endDate, brands, feeds, writers, editors, contentTypes, statuses, allotters }),
+      this.parseFilters({
+        startDate,
+        endDate,
+        brands,
+        feeds,
+        writers,
+        editors,
+        contentTypes,
+        statuses,
+        allotters,
+      }),
     );
   }
 
@@ -242,7 +354,17 @@ export class MsnProductionController {
     @Query('allotters') allotters: string,
   ) {
     return this.service.getEditorDailyBreakdown(
-      this.parseFilters({ startDate, endDate, brands, feeds, writers, editors, contentTypes, statuses, allotters }),
+      this.parseFilters({
+        startDate,
+        endDate,
+        brands,
+        feeds,
+        writers,
+        editors,
+        contentTypes,
+        statuses,
+        allotters,
+      }),
     );
   }
 
@@ -259,7 +381,17 @@ export class MsnProductionController {
     @Query('allotters') allotters: string,
   ) {
     return this.service.getLeakage(
-      this.parseFilters({ startDate, endDate, brands, feeds, writers, editors, contentTypes, statuses, allotters }),
+      this.parseFilters({
+        startDate,
+        endDate,
+        brands,
+        feeds,
+        writers,
+        editors,
+        contentTypes,
+        statuses,
+        allotters,
+      }),
     );
   }
 }

@@ -41,7 +41,7 @@ export class PageMappingsService {
     // as a non-null string that doesn't group with null.
     if ('team' in partial) {
       const t = partial.team;
-      partial.team = (typeof t === 'string' && t.trim()) ? t.trim() : null;
+      partial.team = typeof t === 'string' && t.trim() ? t.trim() : null;
     }
     await this.mappingRepository.update(id, partial);
 
@@ -63,7 +63,8 @@ export class PageMappingsService {
    * every row for a page always has the same team value.
    */
   async updateTeamByPageName(pageName: string, team: string | null) {
-    const normalizedTeam = (typeof team === 'string' && team.trim()) ? team.trim() : null;
+    const normalizedTeam =
+      typeof team === 'string' && team.trim() ? team.trim() : null;
     await this.mappingRepository
       .createQueryBuilder()
       .update()
@@ -105,11 +106,17 @@ export class PageMappingsService {
         // Support both old format (no team) and new format (with team as 3rd col)
         // Old: id, category, platform, pageName, utmSource, utmMediums
         // New: id, category, team, platform, pageName, utmSource, utmMediums
-        let category: string, team: string | null, platform: string, pageName: string, utmSource: string, utmMediumsStr: string;
+        let category: string,
+          team: string | null,
+          platform: string,
+          pageName: string,
+          utmSource: string,
+          utmMediumsStr: string;
 
         if (values.length >= 7) {
           // New format: team is 3rd column
-          [, category, team, platform, pageName, utmSource, utmMediumsStr] = values;
+          [, category, team, platform, pageName, utmSource, utmMediumsStr] =
+            values;
         } else {
           // Old format: no team column
           [, category, platform, pageName, utmSource, utmMediumsStr] = values;

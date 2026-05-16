@@ -366,7 +366,7 @@ export class AnalyticsService {
 
     try {
       const stream = await this.bq.queryStream(query);
-      let batchMap = new Map<string, any>();
+      const batchMap = new Map<string, any>();
       const BATCH_SIZE = 1500;
       let totalProcessed = 0;
 

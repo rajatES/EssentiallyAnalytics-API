@@ -27,8 +27,10 @@ import { MsnProductionModule } from './modules/msn-production/msn-production.mod
       password: process.env.DB_PASSWORD || 'password',
       database: process.env.DB_NAME || 'social_studio_db',
       autoLoadEntities: true,
-      synchronize: process.env.DB_SYNC === 'true' || process.env.NODE_ENV !== 'production',
-      ssl: process.env.DB_SSL === 'true' ? { rejectUnauthorized: false } : false,
+      synchronize:
+        process.env.DB_SYNC === 'true' || process.env.NODE_ENV !== 'production',
+      ssl:
+        process.env.DB_SSL === 'true' ? { rejectUnauthorized: false } : false,
     }),
 
     BullModule.forRoot({

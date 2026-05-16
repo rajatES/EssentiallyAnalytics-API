@@ -34,4 +34,4 @@ import { CommentLinksModule } from '../comment-links/comment-links.module';
   controllers: [AnalyticsController, AuthController],
   providers: [CronService, SyncProcessor],
 })
-export class FacebookModule { }
+export class FacebookModule {}

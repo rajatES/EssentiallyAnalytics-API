@@ -116,7 +116,9 @@ export class CronService {
     // Manual syncs skip this (only page data).
     if (queued > 0 && !options?.skipCommentLinks) {
       await this.waitForQueueIdle();
-      this.logger.log('All page syncs finished. Starting comment-links scan...');
+      this.logger.log(
+        'All page syncs finished. Starting comment-links scan...',
+      );
       await this.runCommentLinksSync();
     }
   }
@@ -190,7 +192,9 @@ export class CronService {
       await this.sleep(pollIntervalMs);
     }
 
-    this.logger.warn('Queue did not drain within 60 minutes. Skipping comment-links.');
+    this.logger.warn(
+      'Queue did not drain within 60 minutes. Skipping comment-links.',
+    );
   }
 
   private sleep(ms: number) {

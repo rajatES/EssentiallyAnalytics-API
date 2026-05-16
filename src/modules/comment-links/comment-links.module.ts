@@ -9,11 +9,7 @@ import { SocialPost } from '../facebook/entities/SocialPost.entity';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([
-      PostLinkComment,
-      SocialProfile,
-      SocialPost,
-    ]),
+    TypeOrmModule.forFeature([PostLinkComment, SocialProfile, SocialPost]),
   ],
   controllers: [CommentLinksController],
   providers: [CommentLinksService],
