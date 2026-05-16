@@ -8,7 +8,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import * as bcrypt from 'bcrypt';
 import * as crypto from 'crypto';
-import { User } from './entities/user.entity';
+import { User, UserRole } from './entities/user.entity';
 
 @Injectable()
 export class AuthService {
@@ -37,10 +37,21 @@ export class AuthService {
       message: 'Login successful',
       apiKey: user.apiKey,
       email: user.email,
+      role: user.role,
     };
   }
 
-  async createAdminUser(email: string, plainTextPassword: string) {
+  async getMe(apiKey: string) {
+    const user = await this.userRepo.findOne({ where: { apiKey } });
+    if (!user) throw new UnauthorizedException();
+    return { email: user.email, role: user.role };
+  }
+
+  async createUser(
+    email: string,
+    plainTextPassword: string,
+    role: UserRole = UserRole.USER,
+  ) {
     if (!email || !plainTextPassword) {
       throw new BadRequestException('Email and password are required');
     }
@@ -48,21 +59,21 @@ export class AuthService {
     if (existingUser) {
       throw new ConflictException('A user with this email already exists');
     }
-    const saltRounds = 10;
-    const passwordHash = await bcrypt.hash(plainTextPassword, saltRounds);
+    const passwordHash = await bcrypt.hash(plainTextPassword, 10);
     const apiKey = crypto.randomBytes(32).toString('hex');
     const newUser = this.userRepo.create({
       email,
       passwordHash,
       apiKey,
+      role,
     });
 
     await this.userRepo.save(newUser);
 
     return {
-      message: 'Admin account created successfully.',
+      message: 'Account created successfully.',
       email: newUser.email,
-      apiKey: newUser.apiKey,
+      role: newUser.role,
     };
   }
 }

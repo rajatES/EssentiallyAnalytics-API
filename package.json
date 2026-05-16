@@ -37,6 +37,7 @@
     "cookie-parser": "^1.4.7",
     "date-fns": "^4.1.0",
     "dotenv": "^17.3.1",
+    "googleapis": "^171.4.0",
     "nodemailer": "^8.0.4",
     "pg": "^8.18.0",
     "reflect-metadata": "^0.2.2",

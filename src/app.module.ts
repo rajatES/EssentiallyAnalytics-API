@@ -12,6 +12,7 @@ import { RevenueModule } from './modules/revenue/revenue.module';
 import { EmailReportsModule } from './modules/email-reports/email-reports.module';
 import { ReportSportsMappingsModule } from './modules/report-sports-mappings/report-sports-mappings.module';
 import { CommentLinksModule } from './modules/comment-links/comment-links.module';
+import { MsnProductionModule } from './modules/msn-production/msn-production.module';
 
 @Module({
   imports: [
@@ -47,6 +48,7 @@ import { CommentLinksModule } from './modules/comment-links/comment-links.module
     EmailReportsModule,
     ReportSportsMappingsModule,
     CommentLinksModule,
+    MsnProductionModule,
   ],
   controllers: [],
   providers: [],
