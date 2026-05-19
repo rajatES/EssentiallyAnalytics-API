@@ -30,6 +30,8 @@ import {
   DailyBreakdownEntry,
   PersonAverage,
   DailyBreakdownResult,
+  RepeatingTitleEntry,
+  RepeatingTitlesResult,
 } from './types';
 
 @Injectable()
@@ -1182,6 +1184,65 @@ export class MsnProductionService {
       allottedWithoutPublishCount: allotment.filter(
         (r) => r.title && !sourceTitles.has(r.title.toLowerCase().trim()),
       ).length,
+    };
+  }
+
+  async getRepeatingTitles(
+    params: MsnFilterParams,
+  ): Promise<RepeatingTitlesResult> {
+    const allotment = await this.filterAllotment(params);
+
+    const titleMap = new Map<
+      string,
+      {
+        title: string;
+        writers: Set<string>;
+        assignments: {
+          writer: string;
+          date: string;
+          feed: string;
+          allottedBy: string;
+          status: string;
+        }[];
+      }
+    >();
+
+    for (const r of allotment) {
+      if (!r.title) continue;
+      const key = r.title.toLowerCase().trim();
+      if (!key) continue;
+
+      if (!titleMap.has(key)) {
+        titleMap.set(key, { title: r.title, writers: new Set(), assignments: [] });
+      }
+      const entry = titleMap.get(key)!;
+      entry.writers.add(r.writer);
+      entry.assignments.push({
+        writer: r.writer,
+        date: r.date || '',
+        feed: r.feed,
+        allottedBy: r.allottedBy,
+        status: r.status,
+      });
+    }
+
+    const repeating: RepeatingTitleEntry[] = [];
+    for (const entry of titleMap.values()) {
+      if (entry.writers.size < 2) continue;
+      repeating.push({
+        title: entry.title,
+        count: entry.assignments.length,
+        assignments: entry.assignments.sort((a, b) =>
+          a.date.localeCompare(b.date),
+        ),
+      });
+    }
+
+    repeating.sort((a, b) => b.count - a.count);
+
+    return {
+      titles: repeating.slice(0, 200),
+      totalCount: repeating.length,
     };
   }
 }

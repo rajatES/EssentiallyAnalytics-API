@@ -8,10 +8,13 @@ import {
   UnauthorizedException,
   Res,
 } from '@nestjs/common';
+import { Throttle, SkipThrottle } from '@nestjs/throttler';
 import type { Response, Request } from 'express';
 import { AuthService } from './auth.service';
 import { Public } from '../../common/decorators/public.decorator';
 import { UserRole } from './entities/user.entity';
+import { LoginDto } from '../../common/dto/login.dto';
+import { SetupDto } from '../../common/dto/setup.dto';
 
 @Controller('api/auth')
 export class AuthController {
@@ -19,7 +22,8 @@ export class AuthController {
 
   @Public()
   @Post('login')
-  async login(@Body() body: any, @Res({ passthrough: true }) res: Response) {
+  @Throttle({ default: { limit: 10, ttl: 60000 } })
+  async login(@Body() body: LoginDto, @Res({ passthrough: true }) res: Response) {
     const { email, password } = body;
 
     const {
@@ -49,6 +53,7 @@ export class AuthController {
   }
 
   @Get('me')
+  @SkipThrottle()
   async getMe(@Req() req: Request) {
     const apiKey = req.cookies?.['auth_token'];
     if (!apiKey) throw new UnauthorizedException();
@@ -65,8 +70,9 @@ export class AuthController {
 
   @Public()
   @Post('setup')
+  @Throttle({ default: { limit: 3, ttl: 60000 } })
   async setupAdmin(
-    @Body() body: any,
+    @Body() body: SetupDto,
     @Headers('x-setup-secret') setupSecret: string,
   ) {
     const validSetupSecret = process.env.SETUP_SECRET;

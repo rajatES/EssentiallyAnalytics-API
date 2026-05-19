@@ -394,4 +394,31 @@ export class MsnProductionController {
       }),
     );
   }
+
+  @Get('repeating-titles')
+  getRepeatingTitles(
+    @Query('startDate') startDate: string,
+    @Query('endDate') endDate: string,
+    @Query('brands') brands: string,
+    @Query('feeds') feeds: string,
+    @Query('writers') writers: string,
+    @Query('editors') editors: string,
+    @Query('contentTypes') contentTypes: string,
+    @Query('statuses') statuses: string,
+    @Query('allotters') allotters: string,
+  ) {
+    return this.service.getRepeatingTitles(
+      this.parseFilters({
+        startDate,
+        endDate,
+        brands,
+        feeds,
+        writers,
+        editors,
+        contentTypes,
+        statuses,
+        allotters,
+      }),
+    );
+  }
 }
