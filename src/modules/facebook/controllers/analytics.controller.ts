@@ -165,6 +165,143 @@ export class AnalyticsController {
     }
   }
 
+  /**
+   * On-demand backfill: ensure the DB has data covering the requested range
+   * for the given profiles. Detects dates with no real data (missing rows OR
+   * legacy all-zero rows) across the selected profiles and queues a
+   * date-range-resync for the missing span.
+   *
+   * Safe to call on every range selection:
+   *  - The worker's skip-empty guard prevents zero-overwrites.
+   *  - The SYNCING guard prevents duplicate concurrent jobs.
+   *  - The frontend dedupes per (profiles + range) to avoid spamming.
+   */
+  @Post('ensure-coverage')
+  async ensureCoverage(
+    @Body() body: { profileIds: string[]; startDate: string; endDate: string },
+    @Res() res: Response,
+  ) {
+    try {
+      const { profileIds, startDate, endDate } = body;
+
+      if (!profileIds || profileIds.length === 0) {
+        return res.status(400).json({ error: 'No profile IDs provided.' });
+      }
+      if (!startDate || !endDate) {
+        return res
+          .status(400)
+          .json({ error: 'Both startDate and endDate are required.' });
+      }
+
+      const start = new Date(`${startDate}T00:00:00.000Z`);
+      const end = new Date(`${endDate}T00:00:00.000Z`);
+      if (isNaN(start.getTime()) || isNaN(end.getTime()) || start > end) {
+        return res.status(400).json({ error: 'Invalid date range.' });
+      }
+
+      const safeIds = profileIds.slice(0, MAX_PROFILE_IDS);
+
+      // Dates that already have REAL data (at least one core metric > 0) for
+      // any selected profile. Legacy all-zero rows are deliberately treated as
+      // "not present" so the backfill heals corrupted zero-data too.
+      const presentRows: { date: string }[] = await this.snapshotRepo
+        .createQueryBuilder('s')
+        .select('s.date', 'date')
+        .where('s."profileId" IN (:...ids)', { ids: safeIds })
+        .andWhere('s.date >= :start', { start: startDate })
+        .andWhere('s.date <= :end', { end: endDate })
+        .andWhere(
+          '(s."totalReach" > 0 OR s."totalImpressions" > 0 OR s."totalEngagement" > 0 OR s."videoViews" > 0 OR s."followersGained" > 0 OR s."pageViews" > 0 OR s."netMessages" > 0)',
+        )
+        .groupBy('s.date')
+        .getRawMany();
+
+      const present = new Set<string>();
+      for (const row of presentRows) {
+        const d =
+          typeof row.date === 'string'
+            ? row.date.split('T')[0]
+            : new Date(row.date).toISOString().split('T')[0];
+        present.add(d);
+      }
+
+      // Walk the range (UTC, matching the aggregate read path) → missing dates
+      const missingDates: string[] = [];
+      const dIter = new Date(startDate + 'T00:00:00Z');
+      const dEnd = new Date(endDate + 'T00:00:00Z');
+      while (dIter <= dEnd) {
+        const dStr = dIter.toISOString().split('T')[0];
+        if (!present.has(dStr)) missingDates.push(dStr);
+        dIter.setUTCDate(dIter.getUTCDate() + 1);
+      }
+
+      if (missingDates.length === 0) {
+        return res
+          .status(200)
+          .json({ backfilling: false, missingDates: [], queued: 0 });
+      }
+
+      // Backfill span = first..last missing date, clamped to 90 days
+      let spanStart = missingDates[0];
+      const spanEnd = missingDates[missingDates.length - 1];
+      const spanStartDate = new Date(spanStart + 'T00:00:00Z');
+      const spanEndDate = new Date(spanEnd + 'T00:00:00Z');
+      const spanDays = Math.ceil(
+        (spanEndDate.getTime() - spanStartDate.getTime()) /
+          (1000 * 60 * 60 * 24),
+      );
+      if (spanDays > 90) {
+        const clamped = new Date(spanEndDate);
+        clamped.setUTCDate(clamped.getUTCDate() - 90);
+        spanStart = clamped.toISOString().split('T')[0];
+      }
+
+      // Queue resync per profile, reusing the SYNCING guard from resync-range
+      const profiles = await this.profileRepo.find({
+        where: { profileId: In(safeIds), isActive: true },
+        select: ['profileId', 'syncState'],
+      });
+      const activeJobs = await this.syncQueue.getActiveCount();
+      const waitingJobs = await this.syncQueue.getWaitingCount();
+
+      let queued = 0;
+      for (const profile of profiles) {
+        if (profile.syncState === 'SYNCING') {
+          if (activeJobs > 0 || waitingJobs > 0) continue;
+          await this.profileRepo.update(
+            { profileId: profile.profileId },
+            {
+              syncState: 'FAILED',
+              lastSyncError: 'Auto-reset: was stuck in SYNCING',
+            },
+          );
+        }
+
+        await this.profileRepo.update(
+          { profileId: profile.profileId },
+          { syncState: 'SYNCING', lastSyncError: '' },
+        );
+
+        await this.syncQueue.add('date-range-resync', {
+          profileId: profile.profileId,
+          startDate: spanStart,
+          endDate: spanEnd,
+        });
+
+        queued++;
+      }
+
+      return res.status(200).json({
+        backfilling: queued > 0,
+        missingDates,
+        queued,
+        span: { startDate: spanStart, endDate: spanEnd },
+      });
+    } catch (error: any) {
+      return res.status(500).json({ error: error.message });
+    }
+  }
+
   @Get('demographics/:profileId')
   async getDemographics(
     @Param('profileId') profileId: string,

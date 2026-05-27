@@ -3,7 +3,7 @@ import { RevenueService } from './revenue.service';
 
 @Controller('v1/revenue')
 export class RevenueController {
-  constructor(private readonly revenueService: RevenueService) {}
+  constructor(private readonly revenueService: RevenueService) { }
 
   @Get('metrics')
   async getMetrics(

@@ -148,50 +148,69 @@ export class SyncProcessor {
             if (net < 0) igUnfollows = Math.abs(net);
           }
 
+          const isFb = profile.platform === 'facebook';
+
+          const followersGained = isFb
+            ? metrics['page_daily_follows_unique'] || 0
+            : igGained;
+          const unfollows = isFb
+            ? metrics['page_daily_unfollows_unique'] || 0
+            : igUnfollows;
+          const totalReach = isFb
+            ? metrics['page_impressions_unique'] || 0
+            : metrics['reach'] || 0;
+          const totalImpressions = isFb
+            ? metrics['page_impressions_unique'] || 0
+            : metrics['views'] || metrics['reach'] || 0;
+          const videoViews = isFb ? metrics['page_video_views'] || 0 : 0;
+          const totalEngagement = isFb
+            ? metrics['page_post_engagements'] || 0
+            : metrics['total_interactions'] || 0;
+          const profileClicks = isFb
+            ? metrics['page_total_actions'] || 0
+            : metrics['website_clicks'] || 0;
+          const pageViews = isFb
+            ? metrics['page_views_total'] || 0
+            : metrics['profile_views'] || 0;
+          const netMessages = isFb
+            ? (metrics['page_messages_new_conversations_unique'] || 0) +
+              (metrics['page_messages_total_messaging_connections'] || 0)
+            : 0;
+
+          // Skip days where Meta returned no real data. Writing an all-zero
+          // payload would overwrite previously-synced good values via upsert.
+          // Only persist when at least one core metric carries real data, so a
+          // genuine fresh update still overwrites the DB for higher accuracy.
+          const hasData =
+            followersGained > 0 ||
+            unfollows > 0 ||
+            totalReach > 0 ||
+            totalImpressions > 0 ||
+            videoViews > 0 ||
+            totalEngagement > 0 ||
+            profileClicks > 0 ||
+            pageViews > 0 ||
+            netMessages > 0;
+
+          if (!hasData) {
+            fillDate.setDate(fillDate.getDate() + 1);
+            continue;
+          }
+
           snapshotPayloads.push({
             profileId: profile.profileId,
             date: dateStr,
             platform: profile.platform,
             totalFollowers: basics?.followers_count || 0,
-
-            followersGained:
-              profile.platform === 'facebook'
-                ? metrics['page_daily_follows_unique'] || 0
-                : igGained,
-            unfollows:
-              profile.platform === 'facebook'
-                ? metrics['page_daily_unfollows_unique'] || 0
-                : igUnfollows,
-
-            totalReach:
-              profile.platform === 'facebook'
-                ? metrics['page_impressions_unique'] || 0
-                : metrics['reach'] || 0,
-            totalImpressions:
-              profile.platform === 'facebook'
-                ? metrics['page_impressions_unique'] || 0
-                : metrics['views'] || metrics['reach'] || 0,
-            videoViews:
-              profile.platform === 'facebook'
-                ? metrics['page_video_views'] || 0
-                : 0,
-            totalEngagement:
-              profile.platform === 'facebook'
-                ? metrics['page_post_engagements'] || 0
-                : metrics['total_interactions'] || 0,
-            profileClicks:
-              profile.platform === 'facebook'
-                ? metrics['page_total_actions'] || 0
-                : metrics['website_clicks'] || 0,
-            pageViews:
-              profile.platform === 'facebook'
-                ? metrics['page_views_total'] || 0
-                : metrics['profile_views'] || 0,
-            netMessages:
-              profile.platform === 'facebook'
-                ? (metrics['page_messages_new_conversations_unique'] || 0) +
-                  (metrics['page_messages_total_messaging_connections'] || 0)
-                : 0,
+            followersGained,
+            unfollows,
+            totalReach,
+            totalImpressions,
+            videoViews,
+            totalEngagement,
+            profileClicks,
+            pageViews,
+            netMessages,
           });
 
           fillDate.setDate(fillDate.getDate() + 1);
@@ -285,7 +304,8 @@ export class SyncProcessor {
           permalink: post.permalink_url || post.permalink || '',
           isPublished:
             post.is_published !== undefined ? post.is_published : true,
-          isBoosted: post.is_eligible_for_promotion === false,
+          // isBoosted: post.is_eligible_for_promotion === false,
+          isBoosted: false,
           authorName: post.from?.name || post.owner?.username || 'Unknown',
           postedAt: new Date(post.created_time || post.timestamp),
           likes: post.likes?.summary?.total_count || post.like_count || 0,
@@ -473,50 +493,69 @@ export class SyncProcessor {
             if (net < 0) igUnfollows = Math.abs(net);
           }
 
+          const isFb = profile.platform === 'facebook';
+
+          const followersGained = isFb
+            ? metrics['page_daily_follows_unique'] || 0
+            : igGained;
+          const unfollows = isFb
+            ? metrics['page_daily_unfollows_unique'] || 0
+            : igUnfollows;
+          const totalReach = isFb
+            ? metrics['page_impressions_unique'] || 0
+            : metrics['reach'] || 0;
+          const totalImpressions = isFb
+            ? metrics['page_impressions_unique'] || 0
+            : metrics['views'] || metrics['reach'] || 0;
+          const videoViews = isFb ? metrics['page_video_views'] || 0 : 0;
+          const totalEngagement = isFb
+            ? metrics['page_post_engagements'] || 0
+            : metrics['total_interactions'] || 0;
+          const profileClicks = isFb
+            ? metrics['page_total_actions'] || 0
+            : metrics['website_clicks'] || 0;
+          const pageViews = isFb
+            ? metrics['page_views_total'] || 0
+            : metrics['profile_views'] || 0;
+          const netMessages = isFb
+            ? (metrics['page_messages_new_conversations_unique'] || 0) +
+              (metrics['page_messages_total_messaging_connections'] || 0)
+            : 0;
+
+          // Skip days where Meta returned no real data. Writing an all-zero
+          // payload would overwrite previously-synced good values via upsert.
+          // Only persist when at least one core metric carries real data, so a
+          // genuine fresh update still overwrites the DB for higher accuracy.
+          const hasData =
+            followersGained > 0 ||
+            unfollows > 0 ||
+            totalReach > 0 ||
+            totalImpressions > 0 ||
+            videoViews > 0 ||
+            totalEngagement > 0 ||
+            profileClicks > 0 ||
+            pageViews > 0 ||
+            netMessages > 0;
+
+          if (!hasData) {
+            fillDate.setDate(fillDate.getDate() + 1);
+            continue;
+          }
+
           snapshotPayloads.push({
             profileId: profile.profileId,
             date: dateStr,
             platform: profile.platform,
             totalFollowers: basics?.followers_count || 0,
-
-            followersGained:
-              profile.platform === 'facebook'
-                ? metrics['page_daily_follows_unique'] || 0
-                : igGained,
-            unfollows:
-              profile.platform === 'facebook'
-                ? metrics['page_daily_unfollows_unique'] || 0
-                : igUnfollows,
-
-            totalReach:
-              profile.platform === 'facebook'
-                ? metrics['page_impressions_unique'] || 0
-                : metrics['reach'] || 0,
-            totalImpressions:
-              profile.platform === 'facebook'
-                ? metrics['page_impressions_unique'] || 0
-                : metrics['views'] || metrics['reach'] || 0,
-            videoViews:
-              profile.platform === 'facebook'
-                ? metrics['page_video_views'] || 0
-                : 0,
-            totalEngagement:
-              profile.platform === 'facebook'
-                ? metrics['page_post_engagements'] || 0
-                : metrics['total_interactions'] || 0,
-            profileClicks:
-              profile.platform === 'facebook'
-                ? metrics['page_total_actions'] || 0
-                : metrics['website_clicks'] || 0,
-            pageViews:
-              profile.platform === 'facebook'
-                ? metrics['page_views_total'] || 0
-                : metrics['profile_views'] || 0,
-            netMessages:
-              profile.platform === 'facebook'
-                ? (metrics['page_messages_new_conversations_unique'] || 0) +
-                  (metrics['page_messages_total_messaging_connections'] || 0)
-                : 0,
+            followersGained,
+            unfollows,
+            totalReach,
+            totalImpressions,
+            videoViews,
+            totalEngagement,
+            profileClicks,
+            pageViews,
+            netMessages,
           });
 
           fillDate.setDate(fillDate.getDate() + 1);
@@ -609,7 +648,8 @@ export class SyncProcessor {
           permalink: post.permalink_url || post.permalink || '',
           isPublished:
             post.is_published !== undefined ? post.is_published : true,
-          isBoosted: post.is_eligible_for_promotion === false,
+          // isBoosted: post.is_eligible_for_promotion === false,
+          isBoosted: false,
           authorName: post.from?.name || post.owner?.username || 'Unknown',
           postedAt: new Date(post.created_time || post.timestamp),
           likes: post.likes?.summary?.total_count || post.like_count || 0,

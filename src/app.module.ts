@@ -20,8 +20,6 @@ import { MsnProductionModule } from './modules/msn-production/msn-production.mod
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
     ScheduleModule.forRoot(),
-
-    // Rate limiting — 100 requests per 60 seconds per IP
     ThrottlerModule.forRoot([
       {
         ttl: 60000,
@@ -69,4 +67,4 @@ import { MsnProductionModule } from './modules/msn-production/msn-production.mod
     },
   ],
 })
-export class AppModule {}
+export class AppModule { }

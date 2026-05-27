@@ -5,7 +5,6 @@ import { Repository, MoreThanOrEqual } from 'typeorm';
 import { InjectQueue } from '@nestjs/bull';
 import type { Queue } from 'bull';
 import { SocialProfile } from '../entities/SocialProfile.entity';
-import { AnalyticsSnapshot } from '../entities/AnalyticsSnapshot.entity';
 import { SocialPost } from '../entities/SocialPost.entity';
 import { CommentLinksService } from '../../comment-links/comment-links.service';
 
@@ -16,13 +15,11 @@ export class CronService {
   constructor(
     @InjectRepository(SocialProfile)
     private profileRepo: Repository<SocialProfile>,
-    @InjectRepository(AnalyticsSnapshot)
-    private snapshotRepo: Repository<AnalyticsSnapshot>,
     @InjectRepository(SocialPost)
     private postRepo: Repository<SocialPost>,
     @InjectQueue('social-sync-queue') private syncQueue: Queue,
     private readonly commentLinksService: CommentLinksService,
-  ) {}
+  ) { }
 
   @Cron('0 16 * * *', { timeZone: 'Asia/Kolkata' })
   async handleDailySync4PM() {
@@ -35,8 +32,6 @@ export class CronService {
       'Starting automated daily background sync for active profiles...',
     );
 
-    // Check if any sync jobs are currently active or waiting in the queue.
-    // If so, skip the entire daily sync to avoid interrupting ongoing imports.
     const activeJobCount = await this.syncQueue.getActiveCount();
     const waitingJobCount = await this.syncQueue.getWaitingCount();
 
@@ -47,8 +42,6 @@ export class CronService {
       return;
     }
 
-    // Auto-reset stuck profiles: if the queue is empty but some profiles
-    // are still marked SYNCING, a previous run crashed mid-sync.
     const stuckProfiles = await this.profileRepo.find({
       where: { isActive: true, syncState: 'SYNCING' as any },
     });
@@ -75,26 +68,7 @@ export class CronService {
     let queued = 0;
 
     for (const profile of activeProfiles) {
-      const latestSnapshot = await this.snapshotRepo.findOne({
-        where: { profileId: profile.profileId },
-        order: { date: 'DESC' },
-      });
-
-      let daysToFetch = 3;
-
-      if (latestSnapshot) {
-        const lastDate = new Date(latestSnapshot.date);
-        const yesterday = new Date();
-        yesterday.setDate(yesterday.getDate() - 1);
-
-        const diffTime = Math.abs(yesterday.getTime() - lastDate.getTime());
-        const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-        if (diffDays > 0) {
-          daysToFetch = diffDays + 2;
-        }
-      }
-
-      daysToFetch = Math.min(daysToFetch, 90);
+      const daysToFetch = 3;
 
       await this.profileRepo.update(
         { profileId: profile.profileId },
@@ -112,8 +86,6 @@ export class CronService {
       );
     }
 
-    // Wait for all page-sync jobs to finish, then run comment-links.
-    // Manual syncs skip this (only page data).
     if (queued > 0 && !options?.skipCommentLinks) {
       await this.waitForQueueIdle();
       this.logger.log(
@@ -123,10 +95,6 @@ export class CronService {
     }
   }
 
-  /**
-   * Scans top comments for links on recent posts across all active
-   * Facebook pages. Runs after page sync is fully complete.
-   */
   private async runCommentLinksSync() {
     const fbProfiles = await this.profileRepo.find({
       where: { platform: 'facebook' as any, isActive: true },
