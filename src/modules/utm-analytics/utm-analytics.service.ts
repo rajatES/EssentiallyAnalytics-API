@@ -3,98 +3,28 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Cron } from '@nestjs/schedule';
 import { BigQueryService } from '../../common/bigquery/bigquery.service';
-import { DailyAnalytics } from './entities/daily-analytics.entity';
+import { TrafficDaily } from './entities/traffic-daily.entity';
+import { TrafficCountryDaily } from './entities/traffic-country-daily.entity';
 import { subDays, format } from 'date-fns';
-import * as fs from 'fs';
-import * as path from 'path';
 import * as readline from 'readline';
 import * as crypto from 'crypto';
 import { Readable } from 'stream';
-
-type Rollup = 'daily' | 'weekly' | 'monthly';
 
 @Injectable()
 export class AnalyticsService {
   private readonly logger = new Logger(AnalyticsService.name);
 
   constructor(
-    @InjectRepository(DailyAnalytics)
-    private readonly analyticsRepo: Repository<DailyAnalytics>,
+    @InjectRepository(TrafficDaily)
+    private readonly trafficRepo: Repository<TrafficDaily>,
+    @InjectRepository(TrafficCountryDaily)
+    private readonly countryRepo: Repository<TrafficCountryDaily>,
     private readonly bq: BigQueryService,
   ) {}
 
-  async getMetrics(
-    rollup: Rollup,
-    startDate: string,
-    endDate: string,
-    filters: any,
-  ) {
-    const qb = this.analyticsRepo.createQueryBuilder('a');
-    // Use direct date comparison — column is already type date, no cast needed.
-    // Casting with ::date prevents PostgreSQL from using the index on "date".
-    qb.where('a.date >= :startDate AND a.date <= :endDate', {
-      startDate,
-      endDate,
-    });
-
-    this.applyFilter(qb, 'utmSource', filters.utmSource);
-    this.applyFilter(qb, 'utmMedium', filters.utmMedium);
-    this.applyFilter(qb, 'utmCampaign', filters.utmCampaign);
-
-    if (rollup === 'daily') {
-      qb.select([
-        "TO_CHAR(a.date, 'YYYY-MM-DD') as event_day",
-        'a.utmSource as utm_source',
-        'a.utmMedium as utm_medium',
-        'a.utmCampaign as utm_campaign',
-        'SUM(a.sessions) as sessions',
-        'SUM(a.pageviews) as pageviews',
-        'SUM(a.users) as users',
-        'SUM(a.newUsers) as new_users',
-        'SUM(a.recurringUsers) as recurring_users',
-        'SUM(a.identifiedUsers) as identified_users',
-        'SUM(a.eventCount) as event_count',
-        'AVG(a.engagementRate) as engagement_rate',
-      ]);
-
-      qb.groupBy("TO_CHAR(a.date, 'YYYY-MM-DD')");
-      qb.addGroupBy('a.utmSource');
-      qb.addGroupBy('a.utmMedium');
-      qb.addGroupBy('a.utmCampaign');
-      qb.orderBy('event_day', 'ASC');
-    } else {
-      const timeBucket =
-        rollup === 'weekly'
-          ? "DATE_TRUNC('week', a.date)"
-          : "DATE_TRUNC('month', a.date)";
-
-      qb.select([
-        `${timeBucket} as period`,
-        'SUM(a.sessions) as sessions',
-        'SUM(a.users) as users',
-        'SUM(a.recurringUsers) as recurring_users',
-        'SUM(a.identifiedUsers) as identified_users',
-        'AVG(a.engagementRate) as engagement_rate',
-      ]);
-      qb.groupBy('period');
-      qb.orderBy('period', 'ASC');
-    }
-
-    // Safety limit: daily rollup can produce many rows (days x sources x mediums x campaigns).
-    // Weekly/monthly rollups produce far fewer, but still capped as a safety net.
-    qb.limit(rollup === 'daily' ? 10000 : 5000);
-
-    return await qb.getRawMany();
-  }
-
-  /**
-   * Memory-optimized aggregated metrics endpoint.
-   * Groups by (date, utmMedium) only — pushes all aggregation to PostgreSQL
-   * to avoid loading hundreds of thousands of rows into Node.js memory.
-   * Typical result: ~50 mediums × ~90 days = ~4,500 rows vs 100k+ from getMetrics.
-   */
+  // Groups by (date, utmMedium) only — keeps result set small vs the full granular query.
   async getAggregatedMetrics(startDate: string, endDate: string, filters: any) {
-    const qb = this.analyticsRepo.createQueryBuilder('a');
+    const qb = this.trafficRepo.createQueryBuilder('a');
     qb.where('a.date >= :startDate AND a.date <= :endDate', {
       startDate,
       endDate,
@@ -120,23 +50,17 @@ export class AnalyticsService {
     qb.groupBy("TO_CHAR(a.date, 'YYYY-MM-DD')");
     qb.addGroupBy('a.utmMedium');
     qb.orderBy('event_day', 'ASC');
-
-    // Hard safety limit to prevent OOM
     qb.limit(50000);
 
     return await qb.getRawMany();
   }
 
-  /**
-   * Returns the list of distinct campaigns for a given source + date range.
-   * Lightweight query — only returns campaign names, no metrics.
-   */
   async getAvailableCampaigns(
     startDate: string,
     endDate: string,
     filters: any,
   ) {
-    const qb = this.analyticsRepo.createQueryBuilder('a');
+    const qb = this.trafficRepo.createQueryBuilder('a');
     qb.where('a.date >= :startDate AND a.date <= :endDate', {
       startDate,
       endDate,
@@ -151,18 +75,16 @@ export class AnalyticsService {
   }
 
   async getCountryStats(startDate: string, endDate: string, filters: any) {
-    const qb = this.analyticsRepo.createQueryBuilder('a');
-    qb.where('a.date >= :startDate AND a.date <= :endDate', {
+    const qb = this.countryRepo.createQueryBuilder('c');
+    qb.where('c.date >= :startDate AND c.date <= :endDate', {
       startDate,
       endDate,
     });
 
-    this.applyFilter(qb, 'utmSource', filters.utmSource);
-    this.applyFilter(qb, 'utmMedium', filters.utmMedium);
-    this.applyFilter(qb, 'utmCampaign', filters.utmCampaign);
+    this.applyFilter(qb, 'utmSource', filters.utmSource, 'c');
 
-    qb.select(['a.country as country', 'SUM(a.sessions) as sessions']);
-    qb.groupBy('a.country');
+    qb.select(['c.country as country', 'SUM(c.sessions) as sessions']);
+    qb.groupBy('c.country');
     qb.orderBy('sessions', 'DESC');
     qb.limit(10);
 
@@ -181,8 +103,7 @@ export class AnalyticsService {
     const prev7Start = format(subDays(today, 14), 'yyyy-MM-dd');
     const prev7End = format(subDays(today, 8), 'yyyy-MM-dd');
 
-    // Single query with conditional SUMs — 1 table scan instead of 4
-    const qb = this.analyticsRepo.createQueryBuilder('a');
+    const qb = this.trafficRepo.createQueryBuilder('a');
     qb.where('a.date >= :earliest AND a.date <= :latest', {
       earliest: prev7Start,
       latest: yesterdayStr,
@@ -232,14 +153,8 @@ export class AnalyticsService {
     };
   }
 
-  /**
-   * -------------------------------------------------------
-   * 2. SYNC & IMPORT LAYER
-   * -------------------------------------------------------
-   */
-
   async importLegacyData(fileBuffer: Buffer) {
-    this.logger.log('Starting Legacy Data Import via Streams...');
+    this.logger.log('Starting Legacy Data Import...');
 
     const fileStream = Readable.from(fileBuffer);
     const rl = readline.createInterface({
@@ -248,9 +163,28 @@ export class AnalyticsService {
     });
 
     let isHeader = true;
-    let batch: Partial<DailyAnalytics>[] = [];
+    const trafficMap = new Map<string, any>();
+    const countryMap = new Map<string, any>();
     const BATCH_SIZE = 1500;
     let totalInserted = 0;
+
+    const flushBatches = async () => {
+      if (trafficMap.size > 0) {
+        const batch = Array.from(trafficMap.values());
+        for (const row of batch) delete row._engCount;
+        await this.trafficRepo.upsert(batch, ['dimensionHash']);
+        totalInserted += batch.length;
+        trafficMap.clear();
+      }
+      if (countryMap.size > 0) {
+        await this.countryRepo.upsert(
+          Array.from(countryMap.values()),
+          ['dimensionHash'],
+        );
+        countryMap.clear();
+      }
+      this.logger.log(`Upserted ${totalInserted} legacy records...`);
+    };
 
     for await (const line of rl) {
       if (!line.trim()) continue;
@@ -274,55 +208,28 @@ export class AnalyticsService {
         const eventCount = Number(values[9]) || 0;
         const engagementRate = Number(values[10]) || 0;
         const country = values[11]?.trim() || 'Unknown';
-        const city = values[12]?.trim() || 'Unknown';
-        const deviceCategory = values[13]?.trim() || 'Unknown';
-        const userGender = values[14]?.trim() || 'Unknown';
-        const userAge = values[15]?.trim() || 'Unknown';
         const recurringUsers = Number(values[16]) || 0;
         const identifiedUsers = Number(values[17]) || 0;
 
         if (!date) continue;
 
-        const rawKey = `${date}|${utmSource}|${utmMedium}|${utmCampaign}|${country}|${city}|${deviceCategory}|${userGender}|${userAge}`;
-        const dimensionHash = crypto
-          .createHash('md5')
-          .update(rawKey)
-          .digest('hex');
-
-        batch.push({
-          dimensionHash,
-          date,
-          utmSource,
-          utmMedium,
-          utmCampaign,
-          country,
-          city,
-          deviceCategory,
-          userGender,
-          userAge,
-          sessions,
-          pageviews,
-          users,
-          newUsers,
-          recurringUsers,
-          identifiedUsers,
-          eventCount,
-          engagementRate,
+        this.accumulateTraffic(trafficMap, {
+          date, utmSource, utmMedium, utmCampaign,
+          sessions, pageviews, users, newUsers,
+          recurringUsers, identifiedUsers, eventCount, engagementRate,
         });
 
-        if (batch.length >= BATCH_SIZE) {
-          await this.analyticsRepo.upsert(batch, ['dimensionHash']);
-          totalInserted += batch.length;
-          this.logger.log(`Upserted ${totalInserted} legacy records...`);
-          batch = [];
+        this.accumulateCountry(countryMap, {
+          date, utmSource, country, sessions,
+        });
+
+        if (trafficMap.size >= BATCH_SIZE) {
+          await flushBatches();
         }
       }
     }
 
-    if (batch.length > 0) {
-      await this.analyticsRepo.upsert(batch, ['dimensionHash']);
-      totalInserted += batch.length;
-    }
+    await flushBatches();
 
     this.logger.log(
       `Legacy Import Complete. Total inserted/updated: ${totalInserted}`,
@@ -330,11 +237,8 @@ export class AnalyticsService {
     return totalInserted;
   }
 
-  // Runs at 7:00 PM IST daily, in sync with the email-report cron.
-  // NOTE: this fires at the same minute as EmailReportsService.handleDailyReport,
-  // so the report may still pick up the PREVIOUS day's sync. If you want the
-  // 7 PM email to include data from this run, move this a few minutes earlier
-  // (e.g. `'45 18 * * *'`) so the sync finishes before the report is generated.
+  // Fires at the same minute as the email report cron (7 PM IST). If the report
+  // needs to include data from this sync, move this a few minutes earlier (e.g. '45 18 * * *').
   @Cron('0 19 * * *', { timeZone: 'Asia/Kolkata' })
   async scheduledSync() {
     await this.syncBigQueryData(false);
@@ -344,39 +248,49 @@ export class AnalyticsService {
     this.logger.log(
       fullSync
         ? 'Starting Full BQ Sync (all available data)...'
-        : 'Starting Daily Analytics Sync from BigQuery Stream...',
+        : 'Starting Daily Analytics Sync from BigQuery...',
     );
 
     const query = fullSync
       ? `
       SELECT
         date, utm_source, utm_medium, utm_campaign,
-        country, city, device_category, user_gender, user_age,
-        sessions, pageviews, users, new_users, recurring_users, identified_users, event_count, engagement_rate
+        country, sessions, pageviews, users, new_users,
+        recurring_users, identified_users, event_count, engagement_rate
       FROM \`bigquerytest-486307.analytics_266571177.utm_daily_metrics\`
     `
       : `
       SELECT
         date, utm_source, utm_medium, utm_campaign,
-        country, city, device_category, user_gender, user_age,
-        sessions, pageviews, users, new_users, recurring_users, identified_users, event_count, engagement_rate
+        country, sessions, pageviews, users, new_users,
+        recurring_users, identified_users, event_count, engagement_rate
       FROM \`bigquerytest-486307.analytics_266571177.utm_daily_metrics\`
       WHERE date >= DATE_SUB(CURRENT_DATE('Asia/Kolkata'), INTERVAL 3 DAY)
     `;
 
     try {
       const stream = await this.bq.queryStream(query);
-      const batchMap = new Map<string, any>();
+      const trafficMap = new Map<string, any>();
+      const countryMap = new Map<string, any>();
       const BATCH_SIZE = 1500;
       let totalProcessed = 0;
 
-      const flushBatch = async () => {
-        if (batchMap.size === 0) return;
-        const batch = Array.from(batchMap.values());
-        await this.analyticsRepo.upsert(batch, ['dimensionHash']);
-        totalProcessed += batch.length;
-        this.logger.log(`Upserted ${totalProcessed} records...`);
-        batchMap.clear();
+      const flushBatches = async () => {
+        if (trafficMap.size > 0) {
+          const batch = Array.from(trafficMap.values());
+          for (const row of batch) delete row._engCount;
+          await this.trafficRepo.upsert(batch, ['dimensionHash']);
+          totalProcessed += batch.length;
+          trafficMap.clear();
+        }
+        if (countryMap.size > 0) {
+          await this.countryRepo.upsert(
+            Array.from(countryMap.values()),
+            ['dimensionHash'],
+          );
+          countryMap.clear();
+        }
+        this.logger.log(`Upserted ${totalProcessed} traffic records...`);
       };
 
       for await (const row of stream) {
@@ -385,75 +299,106 @@ export class AnalyticsService {
         const utmMedium = row.utm_medium || '(none)';
         const utmCampaign = row.utm_campaign || '(not set)';
         const country = row.country || 'Unknown';
-        const city = row.city || 'Unknown';
-        const deviceCategory = row.device_category || 'Unknown';
-        const userGender = row.user_gender || 'Unknown';
-        const userAge = row.user_age || 'Unknown';
-        const rawKey = `${date}|${utmSource}|${utmMedium}|${utmCampaign}|${country}|${city}|${deviceCategory}|${userGender}|${userAge}`;
-        const dimensionHash = crypto
-          .createHash('md5')
-          .update(rawKey)
-          .digest('hex');
 
-        if (!batchMap.has(dimensionHash)) {
-          batchMap.set(dimensionHash, {
-            dimensionHash,
-            date,
-            utmSource,
-            utmMedium,
-            utmCampaign,
-            country,
-            city,
-            deviceCategory,
-            userGender,
-            userAge,
-            sessions: 0,
-            pageviews: 0,
-            users: 0,
-            newUsers: 0,
-            recurringUsers: 0,
-            identifiedUsers: 0,
-            eventCount: 0,
-            engagementRate: 0,
-          });
-        }
+        const sessions = Number(row.sessions) || 0;
+        const pageviews = Number(row.pageviews) || 0;
+        const users = Number(row.users) || 0;
+        const newUsers = Number(row.new_users) || 0;
+        const recurringUsers = Number(row.recurring_users) || 0;
+        const identifiedUsers = Number(row.identified_users) || 0;
+        const eventCount = Number(row.event_count) || 0;
+        const engagementRate = Number(row.engagement_rate) || 0;
 
-        const existingRow = batchMap.get(dimensionHash);
-        existingRow.sessions += Number(row.sessions) || 0;
-        existingRow.pageviews += Number(row.pageviews) || 0;
-        existingRow.users += Number(row.users) || 0;
-        existingRow.newUsers += Number(row.new_users) || 0;
-        existingRow.recurringUsers += Number(row.recurring_users) || 0;
-        existingRow.identifiedUsers += Number(row.identified_users) || 0;
-        existingRow.eventCount += Number(row.event_count) || 0;
-        existingRow.engagementRate =
-          Number(row.engagement_rate) || existingRow.engagementRate;
+        this.accumulateTraffic(trafficMap, {
+          date, utmSource, utmMedium, utmCampaign,
+          sessions, pageviews, users, newUsers,
+          recurringUsers, identifiedUsers, eventCount, engagementRate,
+        });
 
-        if (batchMap.size >= BATCH_SIZE) {
-          await flushBatch();
+        this.accumulateCountry(countryMap, {
+          date, utmSource, country, sessions,
+        });
+
+        if (trafficMap.size >= BATCH_SIZE) {
+          await flushBatches();
         }
       }
 
-      await flushBatch();
-      this.logger.log('Daily Stream Sync Complete.');
+      await flushBatches();
+      this.logger.log('BQ Sync Complete.');
     } catch (error) {
-      this.logger.error('Stream Sync Failed:', error);
+      this.logger.error('BQ Sync Failed:', error);
     }
   }
 
-  /**
-   * -------------------------------------------------------
-   * 3. HELPER METHODS
-   * -------------------------------------------------------
-   */
+  // Accumulates a row into the traffic_daily in-memory map, keyed by (date|source|medium|campaign).
+  private accumulateTraffic(
+    map: Map<string, any>,
+    row: {
+      date: string; utmSource: string; utmMedium: string; utmCampaign: string;
+      sessions: number; pageviews: number; users: number; newUsers: number;
+      recurringUsers: number; identifiedUsers: number; eventCount: number;
+      engagementRate: number;
+    },
+  ) {
+    const rawKey = `${row.date}|${row.utmSource}|${row.utmMedium}|${row.utmCampaign}`;
+    const dimensionHash = crypto.createHash('md5').update(rawKey).digest('hex');
 
-  private extractParam(url: string, param: string): string | null {
-    try {
-      const match = url.match(new RegExp(`[?&]${param}=([^&]+)`));
-      return match ? match[1] : null;
-    } catch {
-      return null;
+    if (!map.has(dimensionHash)) {
+      map.set(dimensionHash, {
+        dimensionHash,
+        date: row.date,
+        utmSource: row.utmSource,
+        utmMedium: row.utmMedium,
+        utmCampaign: row.utmCampaign,
+        sessions: 0,
+        pageviews: 0,
+        users: 0,
+        newUsers: 0,
+        recurringUsers: 0,
+        identifiedUsers: 0,
+        eventCount: 0,
+        engagementRate: 0,
+        _engCount: 0,
+      });
     }
+
+    const entry = map.get(dimensionHash);
+    entry.sessions += row.sessions;
+    entry.pageviews += row.pageviews;
+    entry.users += row.users;
+    entry.newUsers += row.newUsers;
+    entry.recurringUsers += row.recurringUsers;
+    entry.identifiedUsers += row.identifiedUsers;
+    entry.eventCount += row.eventCount;
+
+    // Rolling average of engagement rate across accumulated rows
+    if (row.engagementRate > 0) {
+      entry._engCount++;
+      entry.engagementRate =
+        entry.engagementRate + (row.engagementRate - entry.engagementRate) / entry._engCount;
+    }
+  }
+
+  // Accumulates a row into the traffic_country_daily in-memory map, keyed by (date|source|country).
+  private accumulateCountry(
+    map: Map<string, any>,
+    row: { date: string; utmSource: string; country: string; sessions: number },
+  ) {
+    const rawKey = `${row.date}|${row.utmSource}|${row.country}`;
+    const dimensionHash = crypto.createHash('md5').update(rawKey).digest('hex');
+
+    if (!map.has(dimensionHash)) {
+      map.set(dimensionHash, {
+        dimensionHash,
+        date: row.date,
+        utmSource: row.utmSource,
+        country: row.country,
+        sessions: 0,
+      });
+    }
+
+    map.get(dimensionHash).sessions += row.sessions;
   }
 
   private parseCSVLine(text: string): string[] {
@@ -483,21 +428,26 @@ export class AnalyticsService {
     return Number((((current - previous) / previous) * 100).toFixed(2));
   }
 
-  private applyFilter(qb: any, column: string, value?: string | string[]) {
+  private applyFilter(
+    qb: any,
+    column: string,
+    value?: string | string[],
+    alias: string = 'a',
+  ) {
     if (!value) return;
 
     // Normalize Facebook/Instagram traffic variations coming from Google Analytics
     if (column === 'utmSource' && value === 'fb') {
       qb.andWhere(
-        `(a.${column} ILIKE '%face%' OR a.${column} ILIKE '%ig%' OR a.${column} ILIKE '%insta%' OR a.${column} IN ('fb', 'Fb'))`,
+        `(${alias}.${column} ILIKE '%face%' OR ${alias}.${column} ILIKE '%ig%' OR ${alias}.${column} ILIKE '%insta%' OR ${alias}.${column} IN ('fb', 'Fb'))`,
       );
       return;
     }
 
     if (Array.isArray(value)) {
-      qb.andWhere(`a.${column} IN (:...${column})`, { [column]: value });
+      qb.andWhere(`${alias}.${column} IN (:...${column})`, { [column]: value });
     } else {
-      qb.andWhere(`a.${column} = :${column}`, { [column]: value });
+      qb.andWhere(`${alias}.${column} = :${column}`, { [column]: value });
     }
   }
 }

@@ -7,7 +7,7 @@ import { CsvGeneratorService } from './csv-generators.service';
 
 // Import entities from other modules directly (their TypeOrmModules are
 // registered globally via autoLoadEntities, so we just need the repos)
-import { DailyAnalytics } from '../utm-analytics/entities/daily-analytics.entity';
+import { TrafficDaily } from '../utm-analytics/entities/traffic-daily.entity';
 import { PageMapping } from '../page-mappings/entities/page-mapping.entity';
 import { DailyRevenue } from '../revenue/entities/daily-revenue.entity';
 import { RevenueMapping } from '../revenue/entities/revenue-mapping.entity';
@@ -21,7 +21,7 @@ import { SocialPost } from '../facebook/entities/SocialPost.entity';
       ReportRecipient,
       // Entities from other modules — we register repos here since
       // autoLoadEntities handles schema discovery globally
-      DailyAnalytics,
+      TrafficDaily,
       PageMapping,
       DailyRevenue,
       RevenueMapping,

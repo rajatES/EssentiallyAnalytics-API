@@ -42,10 +42,6 @@ export class EmailReportsService {
     this.logger.log(`SMTP transporter initialized: ${host}:${port}`);
   }
 
-  // ═══════════════════════════════════════════════════════
-  // RECIPIENT CRUD
-  // ═══════════════════════════════════════════════════════
-
   async listRecipients(): Promise<ReportRecipient[]> {
     return this.recipientRepo.find({ order: { createdAt: 'ASC' } });
   }
@@ -69,32 +65,20 @@ export class EmailReportsService {
     await this.recipientRepo.delete(id);
   }
 
-  // ═══════════════════════════════════════════════════════
-  // CRON JOBS
-  // ═══════════════════════════════════════════════════════
-
-  /**
-   * Daily report — 7:00 PM IST every day.
-   * Covers the past 7 days including yesterday (both Traffic & Revenue share the same window).
-   */
+  // Daily report at 7:00 PM IST — covers yesterday and the 6 days before it.
   @Cron('0 19 * * *', { timeZone: 'Asia/Kolkata' })
   async handleDailyReport() {
-    this.logger.log('⏰ Daily report cron triggered');
-    const endDate = this.getDateStr(-1); // yesterday
-    const startDate = this.getDateStr(-7); // 7 days ago → inclusive 7-day window ending yesterday
+    this.logger.log('Daily report cron triggered');
+    const endDate = this.getDateStr(-1);
+    const startDate = this.getDateStr(-7);
     await this.sendReport('daily', startDate, endDate);
   }
 
-  /** Manual trigger for testing — same 7-day window as the daily cron. */
   async sendTestReport(): Promise<{ success: boolean; message: string }> {
     const endDate = this.getDateStr(-1);
     const startDate = this.getDateStr(-7);
     return this.sendReport('test', startDate, endDate);
   }
-
-  // ═══════════════════════════════════════════════════════
-  // CORE SEND LOGIC
-  // ═══════════════════════════════════════════════════════
 
   private async sendReport(
     type: 'daily' | 'test',
@@ -179,10 +163,6 @@ export class EmailReportsService {
     }
   }
 
-  // ═══════════════════════════════════════════════════════
-  // HTML EMAIL TEMPLATE
-  // ═══════════════════════════════════════════════════════
-
   private buildEmailHtml(
     typeLabel: string,
     dateLabel: string,
@@ -243,15 +223,10 @@ export class EmailReportsService {
 </html>`;
   }
 
-  // ═══════════════════════════════════════════════════════
-  // HELPERS
-  // ═══════════════════════════════════════════════════════
-
+  // en-CA locale outputs YYYY-MM-DD, which is what we need for IST-based date math.
   private getDateStr(offsetDays: number): string {
-    // Use IST (Asia/Kolkata) for date calculation
     const now = new Date();
     now.setDate(now.getDate() + offsetDays);
-    // Extract YYYY-MM-DD in IST using en-CA locale (outputs YYYY-MM-DD format)
     return now.toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
   }
 }

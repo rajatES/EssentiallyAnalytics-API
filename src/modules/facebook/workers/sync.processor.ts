@@ -304,7 +304,6 @@ export class SyncProcessor {
           permalink: post.permalink_url || post.permalink || '',
           isPublished:
             post.is_published !== undefined ? post.is_published : true,
-          // isBoosted: post.is_eligible_for_promotion === false,
           isBoosted: false,
           authorName: post.from?.name || post.owner?.username || 'Unknown',
           postedAt: new Date(post.created_time || post.timestamp),
@@ -386,6 +385,90 @@ export class SyncProcessor {
           syncState: 'FAILED',
           lastSyncError: error.message || 'Date-range resync failed',
         },
+      );
+    }
+  }
+
+  /**
+   * Monthly revenue sync — runs on the 28th of each month (triggered by CronService).
+   * Fetches segregated revenue for the whole current month (1st → today) for a
+   * single Facebook page. Revenue data from Meta often has a 3–7 day processing
+   * delay, so re-fetching the full month on the 28th ensures even the earliest
+   * days of the month are fully settled and accurate.
+   * Does NOT touch snapshot or post data — revenue only.
+   */
+  @Process('monthly-revenue-sync')
+  async handleMonthlyRevenueSync(job: Job) {
+    const { profileId } = job.data;
+
+    try {
+      const profile = await this.profileRepo.findOne({
+        where: { profileId, isActive: true, platform: 'facebook' as any },
+      });
+
+      if (!profile) {
+        console.log(
+          `[Worker][MonthlyRev] Profile ${profileId} not found or inactive — skipping.`,
+        );
+        return;
+      }
+
+      // Always sync 1st of current month → today
+      const now = new Date();
+      const monthStart = new Date(
+        Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1),
+      );
+      const monthEnd = now;
+
+      const sinceUnix = Math.floor(monthStart.getTime() / 1000);
+      const untilUnix = Math.floor(monthEnd.getTime() / 1000);
+
+      console.log(
+        `[Worker][MonthlyRev] Syncing revenue for ${profile.profileId} (${monthStart.toISOString().split('T')[0]} → ${monthEnd.toISOString().split('T')[0]})...`,
+      );
+
+      const segregated = await fetchSegregatedRevenue(
+        profile.profileId,
+        profile.accessToken,
+        sinceUnix,
+        untilUnix,
+      );
+
+      if (segregated.length === 0) {
+        console.log(
+          `[Worker][MonthlyRev] No revenue data returned for ${profileId} — skipping upsert.`,
+        );
+        return;
+      }
+
+      const payloads = segregated.map((day) => ({
+        pageId: profile.profileId,
+        date: day.date,
+        bonusRevenue: day.bonus,
+        photoRevenue: day.photo,
+        reelRevenue: day.reel,
+        storyRevenue: day.story,
+        textRevenue: day.text,
+        totalRevenue: day.total,
+      }));
+
+      await this.dailyRevenueRepo.upsert(payloads, ['pageId', 'date']);
+
+      // Keep analytics_snapshots.revenue in sync for the report graph
+      for (const day of segregated) {
+        await this.snapshotRepo.update(
+          { profileId: profile.profileId, date: day.date },
+          { revenue: day.total },
+        );
+      }
+
+      console.log(
+        `[Worker][MonthlyRev] Revenue saved for ${profileId} (${segregated.length} days).`,
+      );
+    } catch (error: any) {
+      console.error(
+        `[Worker][MonthlyRev] Failed for ${profileId}:`,
+        error.message,
       );
     }
   }
@@ -648,7 +731,6 @@ export class SyncProcessor {
           permalink: post.permalink_url || post.permalink || '',
           isPublished:
             post.is_published !== undefined ? post.is_published : true,
-          // isBoosted: post.is_eligible_for_promotion === false,
           isBoosted: false,
           authorName: post.from?.name || post.owner?.username || 'Unknown',
           postedAt: new Date(post.created_time || post.timestamp),

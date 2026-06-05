@@ -256,11 +256,7 @@ export const fetchPostDeepInsights = async (
   }
 };
 
-/**
- * Fetch lifetime demographic data for a profile.
- * Returns gender/age breakdown, top cities, and top countries.
- * Requires 100+ followers to return data.
- */
+// Requires 100+ followers to return data. Returns gender/age, top cities, top countries.
 export const fetchDemographics = async (
   profileId: string,
   accessToken: string,
@@ -315,18 +311,9 @@ export const fetchDemographics = async (
   return result;
 };
 
-/**
- * Convert a Meta monetary value to dollars.
- *
- * Meta's content_monetization_earnings returns:
- *   { currency: "USD", microAmount: 304898436 }
- *
- * Despite the name "micro", empirical testing shows the divisor is 10^8
- * (i.e. values are in hundredths-of-micro-dollars / nano-cents):
- *   304898436 / 100,000,000 = $3.05  (matches actual dashboard value)
- *
- * Plain numbers (from monetization_approximate_earnings) are already in dollars.
- */
+// Meta returns earnings as { currency, microAmount } where the divisor is 10^8
+// (not 10^6 despite the name — empirically confirmed against the dashboard).
+// Plain numbers from monetization_approximate_earnings are already in dollars.
 function toDollars(raw: any): number {
   if (raw && typeof raw === 'object' && 'microAmount' in raw) {
     return (Number(raw.microAmount) || 0) / 100_000_000;
@@ -334,11 +321,7 @@ function toDollars(raw: any): number {
   return Number(raw) || 0;
 }
 
-/**
- * Fetch daily revenue for a Facebook page (Content Monetization Program).
- * Returns an array of { date, revenue } where revenue is in dollars.
- * Non-CMP pages will return empty/zero gracefully.
- */
+// Non-CMP pages will throw — callers catch that and move on.
 export const fetchDailyRevenue = async (
   profileId: string,
   accessToken: string,
@@ -382,20 +365,8 @@ export interface SegregatedRevenueDay {
   total: number;
 }
 
-/**
- * Normalise the keys Meta returns for content-type earnings into our
- * five canonical buckets plus a `total`.
- *
- * IMPORTANT: `bonus` is populated ONLY when Meta explicitly labels the
- * amount as a bonus/extra/performance payout. Amounts from unrecognised
- * labels (or total-only `microAmount`) are added to `total` only —
- * never to `bonus`. This keeps `bonus` truthful (Meta's public API does
- * not surface a "bonus" field for most pages, so it should be 0 unless
- * Meta literally says so).
- *
- * Skips non-earning keys like `currency` / `end_time`.
- * Handles microAmount objects automatically.
- */
+// Maps Meta's content-type earning keys into our five buckets (bonus, photo, reel, story, text).
+// `bonus` is only set when Meta explicitly labels it as such — unknown labels go to `total` only.
 function normaliseCMPValue(raw: Record<string, any>): {
   bonus: number;
   photo: number;
@@ -453,10 +424,6 @@ function normaliseCMPValue(raw: Record<string, any>): {
   return { bonus, photo, reel, story, text, total };
 }
 
-/**
- * Parse a Meta insights response (array of day values) into SegregatedRevenueDay[].
- * Handles both object values (breakdown) and scalar / microAmount values (total).
- */
 function parseSegregatedValues(values: any[]): SegregatedRevenueDay[] {
   const out: SegregatedRevenueDay[] = [];
   for (const val of values) {
@@ -502,18 +469,7 @@ function parseSegregatedValues(values: any[]): SegregatedRevenueDay[] {
   return out;
 }
 
-/**
- * Fetch segregated daily revenue breakdown by content type from the
- * Content Monetization Program.
- *
- * Uses the documented approach:
- *   GET /{page-id}/insights?metric=content_monetization_earnings
- *       &breakdown=content_type&period=day
- *
- * Fallback: `monetization_approximate_earnings` (total only, under bonus).
- *
- * Chunks into ≤ 30-day windows so Meta doesn't silently truncate days.
- */
+// Chunks into ≤30-day windows because Meta silently truncates longer ranges.
 export const fetchSegregatedRevenue = async (
   profileId: string,
   accessToken: string,
@@ -557,36 +513,16 @@ export const fetchSegregatedRevenue = async (
   return deduped;
 };
 
-/**
- * Fetch a single ≤ 30-day chunk of segregated revenue.
- *
- * Per official Meta docs:
- *   - content_monetization_earnings → valid breakdown: "earning_source"
- *   - monetization_approximate_earnings → valid breakdown: "monetization_tool"
- *
- * Meta may return the breakdown in two shapes:
- *   A) Multiple top-level data entries (one per earning source), each with
- *      per-day values as { currency, microAmount } or numbers.
- *   B) A single data entry whose per-day values are objects with content-type
- *      keys (e.g. { "reels": {currency, microAmount}, "photos_text_stories": ... }).
- *
- * Priority:
- *   1. content_monetization_earnings + breakdown=earning_source  (shape A or B)
- *   2. monetization_approximate_earnings + breakdown=monetization_tool (shape A or B)
- *   3. content_monetization_earnings (no breakdown → total only)
- *   4. monetization_approximate_earnings (legacy total)
- */
+// Tries four Meta endpoints in priority order, falling back to a legacy total-only fetch.
+// Attempts 1–3 use earning_source/monetization_tool breakdowns; attempt 4 is the legacy metric.
 async function fetchSegregatedRevenueChunk(
   profileId: string,
   accessToken: string,
   sinceUnix: number,
   untilUnix: number,
 ): Promise<SegregatedRevenueDay[]> {
-  // Helper: a breakdown response is only "useful" if it actually segregates
-  // revenue across at least one of photo/reel/story/text. If it's all dumped
-  // into `total` with zero per-type buckets, the API returned an aggregate-only
-  // response (wrong breakdown name, no permission, etc.) and we should try the
-  // next attempt instead of returning a useless all-zeros breakdown.
+  // A response is only "useful" if at least one per-type bucket is non-zero.
+  // An all-zeros breakdown means the API returned an aggregate-only response.
   const isSegregated = (rows: SegregatedRevenueDay[]) =>
     rows.some((r) => r.photo > 0 || r.reel > 0 || r.story > 0 || r.text > 0);
 
@@ -769,26 +705,9 @@ async function fetchSegregatedRevenueChunk(
   }));
 }
 
-/**
- * Parse Meta's earning_source / monetization_tool breakdown response.
- *
- * Handles all observed response shapes:
- *
- * Shape A — Multiple top-level data entries (one per earning source):
- *   data: [
- *     { title: "Reels", values: [{ value: 12.34, end_time }] },
- *     { title: "Bonus", values: [{ value: 5.67, end_time }] },
- *   ]
- *
- * Shape C — Single data entry where each value has an `earning_source`
- *   or `monetization_tool` sibling field:
- *   data: [{ values: [
- *     { value: 20.23, earning_source: "image", end_time: "..." },
- *     { value: 5.00,  earning_source: "reel",  end_time: "..." },
- *   ]}]
- *
- * In both shapes, we merge per-date into SegregatedRevenueDay records.
- */
+// Handles two Meta response shapes:
+// Shape A — multiple top-level entries (one per earning source), each with a values array.
+// Shape C — single entry where each value carries an earning_source/monetization_tool sibling field.
 function parseEarningSourceResponse(
   dataEntries: any[],
 ): SegregatedRevenueDay[] {
@@ -852,15 +771,8 @@ function parseEarningSourceResponse(
   return Array.from(dayMap.values());
 }
 
-/**
- * Map a Meta earning_source / monetization_tool label to one of our
- * 5 revenue buckets: bonus, photo, reel, story, text.
- *
- * Known `earning_source` values from Meta API:
- *   "image", "reel", "video", "text", "bonus", "story",
- *   "in_stream", "in-stream", "extra", "performance_bonus",
- *   "photos, text & stories", "content_monetization"
- */
+// Known Meta earning_source values: "image", "reel", "video", "text", "bonus",
+// "story", "in_stream", "extra", "performance_bonus", "content_monetization".
 function addAmountToBucket(
   day: SegregatedRevenueDay,
   label: string,

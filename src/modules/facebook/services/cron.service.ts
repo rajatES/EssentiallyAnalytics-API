@@ -26,6 +26,36 @@ export class CronService {
     await this.handleDailySync();
   }
 
+  // 2:00 AM IST on the 28th — re-syncs the full current month for each FB page
+  // so that Meta's 3–7 day processing delay has time to settle before end-of-month.
+  @Cron('0 2 28 * *', { timeZone: 'Asia/Kolkata' })
+  async handleMonthlyRevenueSync() {
+    this.logger.log('Starting monthly revenue sync for all active Facebook pages...');
+
+    const fbProfiles = await this.profileRepo.find({
+      where: { platform: 'facebook' as any, isActive: true },
+    });
+
+    if (fbProfiles.length === 0) {
+      this.logger.log('Monthly revenue sync: no active Facebook pages found.');
+      return;
+    }
+
+    let queued = 0;
+    for (const profile of fbProfiles) {
+      await this.syncQueue.add(
+        'monthly-revenue-sync',
+        { profileId: profile.profileId },
+        { attempts: 3, backoff: 10000 },
+      );
+      queued++;
+    }
+
+    this.logger.log(
+      `Monthly revenue sync: queued ${queued} page(s).`,
+    );
+  }
+
   @Cron(CronExpression.EVERY_DAY_AT_MIDNIGHT)
   async handleDailySync(options?: { skipCommentLinks?: boolean }) {
     this.logger.log(

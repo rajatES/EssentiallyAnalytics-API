@@ -1,7 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, Between, In } from 'typeorm';
-import { DailyAnalytics } from '../utm-analytics/entities/daily-analytics.entity';
+import { TrafficDaily } from '../utm-analytics/entities/traffic-daily.entity';
 import { PageMapping } from '../page-mappings/entities/page-mapping.entity';
 import { DailyRevenue } from '../revenue/entities/daily-revenue.entity';
 import { RevenueMapping } from '../revenue/entities/revenue-mapping.entity';
@@ -14,8 +14,8 @@ export class CsvGeneratorService {
   private readonly logger = new Logger(CsvGeneratorService.name);
 
   constructor(
-    @InjectRepository(DailyAnalytics)
-    private readonly utmRepo: Repository<DailyAnalytics>,
+    @InjectRepository(TrafficDaily)
+    private readonly utmRepo: Repository<TrafficDaily>,
     @InjectRepository(PageMapping)
     private readonly pageMappingRepo: Repository<PageMapping>,
     @InjectRepository(DailyRevenue)
@@ -30,9 +30,6 @@ export class CsvGeneratorService {
     private readonly postRepo: Repository<SocialPost>,
   ) {}
 
-  // ─────────────────────────────────────────────────────
-  // 1. WEB TRAFFIC CSV — 7-day daily breakdown, team-wise + page-wise
-  // ─────────────────────────────────────────────────────
   async generateTrafficCSV(
     startDate: string,
     endDate: string,
@@ -200,9 +197,6 @@ export class CsvGeneratorService {
     return csvRows.join('\n');
   }
 
-  // ─────────────────────────────────────────────────────
-  // 2. REVENUE CSV — 7-day daily breakdown, team-wise + page-wise (with Division)
-  // ─────────────────────────────────────────────────────
   async generateRevenueCSV(
     startDate: string,
     endDate: string,
@@ -310,9 +304,6 @@ export class CsvGeneratorService {
     return csvRows.join('\n');
   }
 
-  // ─────────────────────────────────────────────────────
-  // 3. META/REPORTS CSV (aggregate overview metrics)
-  // ─────────────────────────────────────────────────────
   async generateMetaReportCSV(
     startDate: string,
     endDate: string,
@@ -533,9 +524,6 @@ export class CsvGeneratorService {
     return csvRows.join('\n');
   }
 
-  // ─────────────────────────────────────────────────────
-  // HELPERS
-  // ─────────────────────────────────────────────────────
   private escapeCSV(value: string): string {
     if (value.includes(',') || value.includes('"') || value.includes('\n')) {
       return `"${value.replace(/"/g, '""')}"`;

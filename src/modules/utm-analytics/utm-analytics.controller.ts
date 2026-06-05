@@ -15,33 +15,6 @@ import { AnalyticsService } from './utm-analytics.service';
 export class AnalyticsController {
   constructor(private readonly analyticsService: AnalyticsService) {}
 
-  @Get('utm/metrics')
-  async getUtmMetrics(
-    @Query('rollup') rollup: 'daily' | 'weekly' | 'monthly',
-    @Query('startDate') startDate: string,
-    @Query('endDate') endDate: string,
-    @Query('utmSource') utmSource?: string | string[],
-    @Query('utmMedium') utmMedium?: string | string[],
-    @Query('utmCampaign') utmCampaign?: string | string[],
-  ) {
-    if (!rollup || !startDate || !endDate) {
-      throw new HttpException('Missing params', HttpStatus.BAD_REQUEST);
-    }
-
-    const filters = {
-      utmSource: this.normalizeArray(utmSource),
-      utmMedium: this.normalizeArray(utmMedium),
-      utmCampaign: this.normalizeArray(utmCampaign),
-    };
-
-    return await this.analyticsService.getMetrics(
-      rollup,
-      startDate,
-      endDate,
-      filters,
-    );
-  }
-
   @Get('headlines')
   async getHeadlines(@Query('utmSource') utmSource?: string | string[]) {
     const filters = {
