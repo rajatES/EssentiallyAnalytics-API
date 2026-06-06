@@ -282,21 +282,25 @@ export const fetchDemographics = async (
         `[Meta API Info] Demographics access is deprecated by Facebook for Pages. Skipping fetch for ${profileId}.`,
       );
     } else if (platform === 'instagram') {
-      const metrics = 'audience_gender_age,audience_city,audience_country';
-      const url = `${BASE_URL}/${profileId}/insights?metric=${metrics}&period=lifetime&access_token=${accessToken}`;
+      const url = `${BASE_URL}/${profileId}/insights?metric=follower_demographics&period=lifetime&breakdown=age,city,country,gender&access_token=${accessToken}`;
       const response = await axios.get(url);
 
-      if (response.data?.data) {
-        for (const metric of response.data.data) {
-          const value = metric.total_value?.value || metric.values?.[0]?.value;
-          if (!value || typeof value !== 'object') continue;
-
-          if (metric.name === 'audience_gender_age') {
-            result.genderAge = value;
-          } else if (metric.name === 'audience_city') {
-            result.topCities = value;
-          } else if (metric.name === 'audience_country') {
-            result.topCountries = value;
+      if (response.data?.data?.[0]?.total_value?.breakdowns) {
+        for (const b of response.data.data[0].total_value.breakdowns) {
+          const dim = b.dimension_keys?.[0];
+          const dict: Record<string, number> = {};
+          
+          for (const res of b.results || []) {
+            const key = res.dimension_values?.[0];
+            if (key) dict[key] = res.value;
+          }
+          
+          if (dim === 'age' || dim === 'gender') {
+            Object.assign(result.genderAge, dict);
+          } else if (dim === 'city') {
+            Object.assign(result.topCities, dict);
+          } else if (dim === 'country') {
+            Object.assign(result.topCountries, dict);
           }
         }
       }
@@ -526,62 +530,6 @@ async function fetchSegregatedRevenueChunk(
   const isSegregated = (rows: SegregatedRevenueDay[]) =>
     rows.some((r) => r.photo > 0 || r.reel > 0 || r.story > 0 || r.text > 0);
 
-  // --- Attempt 0.1: POST /{page_id}/content_monetization_earnings (direct edge) ---
-  // Per Meta v23 docs, the only valid breakdown for content_monetization_earnings
-  // at the page level is `earning_source` (NOT `content_type`).
-  try {
-    const url = `${BASE_URL}/${profileId}/content_monetization_earnings`;
-    const response = await axios.post(url, null, {
-      params: {
-        since: sinceUnix,
-        until: untilUnix,
-        period: 'day',
-        breakdown: 'earning_source',
-        access_token: accessToken,
-      },
-    });
-    const dataEntries =
-      response.data?.data || (response.data ? [response.data] : []);
-    if (dataEntries.length > 0) {
-      const result = parseEarningSourceResponse(dataEntries);
-      if (result.length > 0 && isSegregated(result)) {
-        console.log(
-          `[Meta API] Segregated breakdown parsed for ${profileId}: ${result.length} days (Attempt 0.1 POST)`,
-        );
-        return result;
-      }
-    }
-  } catch (err: any) {
-    console.warn(
-      `[Meta API] Attempt 0.1 (POST direct edge) failed for ${profileId}:`,
-      err.response?.data?.error?.message || err.message,
-    );
-  }
-
-  // --- Attempt 0.2: GET /{page_id}/content_monetization_earnings (direct edge) ---
-  try {
-    const url =
-      `${BASE_URL}/${profileId}/content_monetization_earnings` +
-      `?since=${sinceUnix}&until=${untilUnix}&period=day&breakdown=earning_source&access_token=${accessToken}`;
-
-    const response = await axios.get(url);
-    const dataEntries =
-      response.data?.data || (response.data ? [response.data] : []);
-    if (dataEntries.length > 0) {
-      const result = parseEarningSourceResponse(dataEntries);
-      if (result.length > 0 && isSegregated(result)) {
-        console.log(
-          `[Meta API] Segregated breakdown parsed for ${profileId}: ${result.length} days (Attempt 0.2 GET)`,
-        );
-        return result;
-      }
-    }
-  } catch (err: any) {
-    console.warn(
-      `[Meta API] Attempt 0.2 (GET direct edge) failed for ${profileId}:`,
-      err.response?.data?.error?.message || err.message,
-    );
-  }
 
   // --- Attempt 1: insights?metric=content_monetization_earnings&breakdown=earning_source ---
   // Primary source for accurate segmentation. Meta returns each value with an
