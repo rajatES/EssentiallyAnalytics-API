@@ -244,6 +244,127 @@ export class AnalyticsService {
     await this.syncBigQueryData(false);
   }
 
+  // One-shot historical backfill. Rebuilds the BigQuery aggregates across the
+  // entire date range (instead of a single day like the daily scheduled query),
+  // then streams the whole table into Postgres. Safe to re-run — upserts are
+  // keyed by dimensionHash. Intended to be removed once the backfill is done.
+  async backfillFromBigQuery(startSuffix = '20260203', endSuffix?: string) {
+    const end = endSuffix || format(subDays(new Date(), 1), 'yyyyMMdd');
+
+    if (!/^\d{8}$/.test(startSuffix) || !/^\d{8}$/.test(end)) {
+      throw new Error(
+        `Invalid date suffix (expected YYYYMMDD): start=${startSuffix} end=${end}`,
+      );
+    }
+
+    this.logger.log(`Backfill: rebuilding BQ aggregates for ${startSuffix}..${end}`);
+
+    const viewSql = `
+      CREATE OR REPLACE VIEW \`bigquerytest-486307.analytics_266571177.events_utm_base\` AS
+      SELECT
+        PARSE_DATE('%Y%m%d', e.event_date) AS event_day,
+        e.event_timestamp,
+        e.user_pseudo_id,
+        e.user_id,
+        e.event_name,
+        e.geo.country,
+        e.geo.city,
+        e.device.category AS device_category,
+        (SELECT value.string_value FROM UNNEST(e.user_properties) WHERE key = 'gender' LIMIT 1) AS user_gender,
+        (SELECT value.string_value FROM UNNEST(e.user_properties) WHERE key = 'age_bracket' LIMIT 1) AS user_age,
+        COALESCE(p.source, p.utm_source, '(direct)') AS utm_source,
+        COALESCE(p.medium, p.utm_medium, '(none)') AS utm_medium,
+        COALESCE(p.campaign, p.utm_campaign, '(not set)') AS utm_campaign,
+        p.ga_session_id,
+        p.ga_session_number,
+        p.session_engaged
+      FROM \`bigquerytest-486307.analytics_266571177.events_*\` e
+      LEFT JOIN (
+        SELECT
+          event_timestamp,
+          user_pseudo_id,
+          MAX(IF(key = 'source', value.string_value, NULL)) AS source,
+          MAX(IF(key = 'utm_source', value.string_value, NULL)) AS utm_source,
+          MAX(IF(key = 'medium', value.string_value, NULL)) AS medium,
+          MAX(IF(key = 'utm_medium', value.string_value, NULL)) AS utm_medium,
+          MAX(IF(key = 'campaign', value.string_value, NULL)) AS campaign,
+          MAX(IF(key = 'utm_campaign', value.string_value, NULL)) AS utm_campaign,
+          MAX(IF(key = 'ga_session_id', value.int_value, NULL)) AS ga_session_id,
+          MAX(IF(key = 'ga_session_number', value.int_value, NULL)) AS ga_session_number,
+          MAX(IF(key = 'session_engaged', value.string_value, NULL)) AS session_engaged
+        FROM \`bigquerytest-486307.analytics_266571177.events_*\`,
+             UNNEST(event_params)
+        WHERE event_name IN ('page_view', 'session_start', 'first_visit', 'user_engagement', 'user-logged-in')
+          AND _TABLE_SUFFIX BETWEEN '${startSuffix}' AND '${end}'
+        GROUP BY event_timestamp, user_pseudo_id
+      ) p
+      ON e.event_timestamp = p.event_timestamp
+      AND e.user_pseudo_id = p.user_pseudo_id
+      WHERE p.ga_session_id IS NOT NULL
+        AND e._TABLE_SUFFIX BETWEEN '${startSuffix}' AND '${end}';
+    `;
+
+    await this.bq.query(viewSql);
+    this.logger.log('Backfill: base view rebuilt across range, building metrics table...');
+
+    const tableSql = `
+      CREATE OR REPLACE TABLE \`bigquerytest-486307.analytics_266571177.utm_daily_metrics\` AS
+      WITH sessionized AS (
+        SELECT
+          event_day,
+          utm_source,
+          utm_medium,
+          utm_campaign,
+          MAX(country) AS country,
+          MAX(city) AS city,
+          MAX(device_category) AS device_category,
+          MAX(user_gender) AS user_gender,
+          MAX(user_age) AS user_age,
+          CONCAT(user_pseudo_id, '-', CAST(ga_session_id AS STRING)) AS session_id,
+          user_pseudo_id,
+          MAX(user_id) AS user_id,
+          MAX(IF(event_name = 'first_visit', 1, 0)) AS is_new_user,
+          MAX(IF(ga_session_number > 1, 1, 0)) AS is_recurring_user,
+          MAX(IF(session_engaged = '1', 1, 0)) AS is_engaged,
+          COUNTIF(event_name = 'page_view') AS pageviews,
+          COUNT(*) AS event_count
+        FROM \`bigquerytest-486307.analytics_266571177.events_utm_base\`
+        GROUP BY 1,2,3,4, 10,11
+      )
+      SELECT
+        event_day AS date,
+        utm_source,
+        utm_medium,
+        utm_campaign,
+        country,
+        city,
+        device_category,
+        COALESCE(user_gender, 'Unknown') AS user_gender,
+        COALESCE(user_age, 'Unknown') AS user_age,
+        COUNT(DISTINCT session_id) AS sessions,
+        SUM(pageviews) AS pageviews,
+        COUNT(DISTINCT user_pseudo_id) AS users,
+        COUNT(DISTINCT IF(is_new_user = 1, user_pseudo_id, NULL)) AS new_users,
+        COUNT(DISTINCT IF(is_recurring_user = 1, user_pseudo_id, NULL)) AS recurring_users,
+        COUNT(DISTINCT user_id) AS identified_users,
+        SUM(event_count) AS event_count,
+        SAFE_DIVIDE(
+          COUNT(DISTINCT IF(is_engaged = 1, session_id, NULL)),
+          COUNT(DISTINCT session_id)
+        ) AS engagement_rate
+      FROM sessionized
+      GROUP BY 1,2,3,4, 5,6,7,8,9;
+    `;
+
+    await this.bq.query(tableSql);
+    this.logger.log('Backfill: metrics table rebuilt, syncing into Postgres...');
+
+    await this.syncBigQueryData(true);
+    this.logger.log(`Backfill complete for ${startSuffix}..${end}`);
+
+    return { startSuffix, endSuffix: end };
+  }
+
   async syncBigQueryData(fullSync: boolean = true) {
     this.logger.log(
       fullSync

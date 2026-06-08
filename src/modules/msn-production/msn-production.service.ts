@@ -103,7 +103,10 @@ export class MsnProductionService {
         }
 
         if (toUpsert.length > 0) {
-          await this.sourceRepo.upsert(toUpsert, ['rowId']);
+          // Batch upserts to stay under Postgres' bind-parameter limit
+          for (let i = 0; i < toUpsert.length; i += 500) {
+            await this.sourceRepo.upsert(toUpsert.slice(i, i + 500), ['rowId']);
+          }
           this.logger.log(`Source: upserted ${toUpsert.length} changed rows`);
         }
 
@@ -112,7 +115,9 @@ export class MsnProductionService {
           (id) => !incomingIds.has(id),
         );
         if (staleIds.length > 0) {
-          await this.sourceRepo.delete(staleIds);
+          for (let i = 0; i < staleIds.length; i += 500) {
+            await this.sourceRepo.delete(staleIds.slice(i, i + 500));
+          }
           this.logger.log(`Source: removed ${staleIds.length} stale rows`);
         }
       }

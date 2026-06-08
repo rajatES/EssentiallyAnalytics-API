@@ -97,6 +97,23 @@ export class AnalyticsController {
     return { status: 'success', message: 'Sync completed' };
   }
 
+  // One-time historical backfill: rebuilds the BQ aggregates across the full
+  // date range and syncs everything into Postgres. Remove once backfill is done.
+  @Post('sync/backfill')
+  async triggerBackfill(
+    @Query('start') start?: string,
+    @Query('end') end?: string,
+  ) {
+    const result = await this.analyticsService.backfillFromBigQuery(
+      start || '20260203',
+      end,
+    );
+    return {
+      status: 'success',
+      message: `Backfill complete for ${result.startSuffix}..${result.endSuffix}`,
+    };
+  }
+
   @Post('import/legacy')
   @UseInterceptors(FileInterceptor('file'))
   async importLegacyData(@UploadedFile() file: Express.Multer.File) {
