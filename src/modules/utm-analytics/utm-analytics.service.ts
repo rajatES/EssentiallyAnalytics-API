@@ -165,27 +165,9 @@ export class AnalyticsService {
     let isHeader = true;
     const trafficMap = new Map<string, any>();
     const countryMap = new Map<string, any>();
-    const BATCH_SIZE = 1500;
-    let totalInserted = 0;
 
-    const flushBatches = async () => {
-      if (trafficMap.size > 0) {
-        const batch = Array.from(trafficMap.values());
-        for (const row of batch) delete row._engCount;
-        await this.trafficRepo.upsert(batch, ['dimensionHash']);
-        totalInserted += batch.length;
-        trafficMap.clear();
-      }
-      if (countryMap.size > 0) {
-        await this.countryRepo.upsert(
-          Array.from(countryMap.values()),
-          ['dimensionHash'],
-        );
-        countryMap.clear();
-      }
-      this.logger.log(`Upserted ${totalInserted} legacy records...`);
-    };
-
+    // Accumulate the whole file before writing (see flushMaps / syncBigQueryData
+    // for why mid-stream flushing would undercount on repeated dimension keys).
     for await (const line of rl) {
       if (!line.trim()) continue;
 
@@ -222,14 +204,11 @@ export class AnalyticsService {
         this.accumulateCountry(countryMap, {
           date, utmSource, country, sessions,
         });
-
-        if (trafficMap.size >= BATCH_SIZE) {
-          await flushBatches();
-        }
       }
     }
 
-    await flushBatches();
+    const totalInserted = trafficMap.size;
+    await this.flushMaps(trafficMap, countryMap);
 
     this.logger.log(
       `Legacy Import Complete. Total inserted/updated: ${totalInserted}`,
@@ -393,27 +372,13 @@ export class AnalyticsService {
       const stream = await this.bq.queryStream(query);
       const trafficMap = new Map<string, any>();
       const countryMap = new Map<string, any>();
-      const BATCH_SIZE = 1500;
-      let totalProcessed = 0;
 
-      const flushBatches = async () => {
-        if (trafficMap.size > 0) {
-          const batch = Array.from(trafficMap.values());
-          for (const row of batch) delete row._engCount;
-          await this.trafficRepo.upsert(batch, ['dimensionHash']);
-          totalProcessed += batch.length;
-          trafficMap.clear();
-        }
-        if (countryMap.size > 0) {
-          await this.countryRepo.upsert(
-            Array.from(countryMap.values()),
-            ['dimensionHash'],
-          );
-          countryMap.clear();
-        }
-        this.logger.log(`Upserted ${totalProcessed} traffic records...`);
-      };
-
+      // Accumulate the ENTIRE result set before writing. The source rows are not
+      // ordered by our dimension key, so a single (date|source|medium|campaign)
+      // is spread across many granular rows throughout the stream. Flushing mid-stream
+      // and clearing the map would make a later upsert overwrite (not add to) an
+      // already-written row, undercounting every metric. Pre-aggregation keeps the
+      // key count small, so the full map fits in memory; we write once at the end.
       for await (const row of stream) {
         const date = row.date?.value || row.date;
         const utmSource = row.utm_source || '(direct)';
@@ -439,17 +404,44 @@ export class AnalyticsService {
         this.accumulateCountry(countryMap, {
           date, utmSource, country, sessions,
         });
-
-        if (trafficMap.size >= BATCH_SIZE) {
-          await flushBatches();
-        }
       }
 
-      await flushBatches();
+      await this.flushMaps(trafficMap, countryMap);
       this.logger.log('BQ Sync Complete.');
     } catch (error) {
       this.logger.error('BQ Sync Failed:', error);
     }
+  }
+
+  // Writes the fully-accumulated maps to Postgres in a single pass. Each key
+  // appears exactly once here, so chunking (to stay under the bind-parameter
+  // limit) is safe — no key is split across two upserts.
+  private async flushMaps(
+    trafficMap: Map<string, any>,
+    countryMap: Map<string, any>,
+  ) {
+    const CHUNK = 1000;
+
+    const trafficRows = Array.from(trafficMap.values());
+    for (const row of trafficRows) delete row._engCount;
+    for (let i = 0; i < trafficRows.length; i += CHUNK) {
+      await this.trafficRepo.upsert(
+        trafficRows.slice(i, i + CHUNK),
+        ['dimensionHash'],
+      );
+    }
+
+    const countryRows = Array.from(countryMap.values());
+    for (let i = 0; i < countryRows.length; i += CHUNK) {
+      await this.countryRepo.upsert(
+        countryRows.slice(i, i + CHUNK),
+        ['dimensionHash'],
+      );
+    }
+
+    this.logger.log(
+      `Upserted ${trafficRows.length} traffic + ${countryRows.length} country records.`,
+    );
   }
 
   // Accumulates a row into the traffic_daily in-memory map, keyed by (date|source|medium|campaign).
