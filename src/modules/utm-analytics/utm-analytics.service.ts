@@ -278,7 +278,7 @@ export class AnalyticsService {
         p.ga_session_id,
         p.ga_session_number,
         p.session_engaged
-      FROM \`bigquerytest-486307.analytics_266571177.events_*\` e
+      FROM \`bigquerytest-486307.analytics_266571177.events_2*\` e
       LEFT JOIN (
         SELECT
           event_timestamp,
@@ -292,16 +292,16 @@ export class AnalyticsService {
           MAX(IF(key = 'ga_session_id', value.int_value, NULL)) AS ga_session_id,
           MAX(IF(key = 'ga_session_number', value.int_value, NULL)) AS ga_session_number,
           MAX(IF(key = 'session_engaged', value.string_value, NULL)) AS session_engaged
-        FROM \`bigquerytest-486307.analytics_266571177.events_*\`,
+        FROM \`bigquerytest-486307.analytics_266571177.events_2*\`,
              UNNEST(event_params)
         WHERE event_name IN ('page_view', 'session_start', 'first_visit', 'user_engagement', 'user-logged-in')
-          AND _TABLE_SUFFIX BETWEEN '${startSuffix}' AND '${end}'
+          AND CONCAT('2', _TABLE_SUFFIX) BETWEEN '${startSuffix}' AND '${end}'
         GROUP BY event_timestamp, user_pseudo_id
       ) p
       ON e.event_timestamp = p.event_timestamp
       AND e.user_pseudo_id = p.user_pseudo_id
       WHERE p.ga_session_id IS NOT NULL
-        AND e._TABLE_SUFFIX BETWEEN '${startSuffix}' AND '${end}';
+        AND CONCAT('2', e._TABLE_SUFFIX) BETWEEN '${startSuffix}' AND '${end}';
     `;
 
     await this.bq.query(viewSql);
