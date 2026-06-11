@@ -7,18 +7,18 @@ export class MsnProductionController {
   constructor(private readonly service: MsnProductionService) {}
 
   private parseFilters(query: Record<string, any>): MsnFilterParams {
+    const split = (v: any): string[] | undefined =>
+      v ? v.split(',') : undefined;
     return {
       startDate: query.startDate || undefined,
       endDate: query.endDate || undefined,
-      brands: query.brands ? query.brands.split(',') : undefined,
-      feeds: query.feeds ? query.feeds.split(',') : undefined,
-      writers: query.writers ? query.writers.split(',') : undefined,
-      editors: query.editors ? query.editors.split(',') : undefined,
-      contentTypes: query.contentTypes
-        ? query.contentTypes.split(',')
-        : undefined,
-      statuses: query.statuses ? query.statuses.split(',') : undefined,
-      allotters: query.allotters ? query.allotters.split(',') : undefined,
+      categories: split(query.categories),
+      feeds: split(query.feeds),
+      writers: split(query.writers),
+      editors: split(query.editors),
+      contentTypes: split(query.contentTypes),
+      statuses: split(query.statuses),
+      allotters: split(query.allotters),
     };
   }
 
@@ -39,386 +39,121 @@ export class MsnProductionController {
   }
 
   @Get('overview')
-  getOverview(
-    @Query('startDate') startDate: string,
-    @Query('endDate') endDate: string,
-    @Query('brands') brands: string,
-    @Query('feeds') feeds: string,
-    @Query('writers') writers: string,
-    @Query('editors') editors: string,
-    @Query('contentTypes') contentTypes: string,
-    @Query('statuses') statuses: string,
-    @Query('allotters') allotters: string,
-  ) {
-    return this.service.getOverview(
-      this.parseFilters({
-        startDate,
-        endDate,
-        brands,
-        feeds,
-        writers,
-        editors,
-        contentTypes,
-        statuses,
-        allotters,
-      }),
-    );
+  getOverview(@Query() query: Record<string, any>) {
+    return this.service.getOverview(this.parseFilters(query));
   }
 
   @Get('timeseries')
-  getTimeseries(
-    @Query('startDate') startDate: string,
-    @Query('endDate') endDate: string,
-    @Query('granularity') granularity: string,
-    @Query('brands') brands: string,
-    @Query('feeds') feeds: string,
-    @Query('writers') writers: string,
-    @Query('editors') editors: string,
-    @Query('contentTypes') contentTypes: string,
-    @Query('statuses') statuses: string,
-    @Query('allotters') allotters: string,
-  ) {
+  getTimeseries(@Query() query: Record<string, any>) {
     return this.service.getTimeseries(
-      this.parseFilters({
-        startDate,
-        endDate,
-        brands,
-        feeds,
-        writers,
-        editors,
-        contentTypes,
-        statuses,
-        allotters,
-      }),
-      granularity || 'day',
+      this.parseFilters(query),
+      query.granularity || 'day',
     );
   }
 
   @Get('funnel')
-  getFunnel(
-    @Query('startDate') startDate: string,
-    @Query('endDate') endDate: string,
-    @Query('brands') brands: string,
-    @Query('feeds') feeds: string,
-    @Query('writers') writers: string,
-    @Query('editors') editors: string,
-    @Query('contentTypes') contentTypes: string,
-    @Query('statuses') statuses: string,
-    @Query('allotters') allotters: string,
-  ) {
-    return this.service.getFunnel(
-      this.parseFilters({
-        startDate,
-        endDate,
-        brands,
-        feeds,
-        writers,
-        editors,
-        contentTypes,
-        statuses,
-        allotters,
-      }),
-    );
+  getFunnel(@Query() query: Record<string, any>) {
+    return this.service.getFunnel(this.parseFilters(query));
   }
 
   @Get('status-mix')
-  getStatusMix(
-    @Query('startDate') startDate: string,
-    @Query('endDate') endDate: string,
-    @Query('brands') brands: string,
-    @Query('feeds') feeds: string,
-    @Query('writers') writers: string,
-    @Query('editors') editors: string,
-    @Query('contentTypes') contentTypes: string,
-    @Query('statuses') statuses: string,
-    @Query('allotters') allotters: string,
-  ) {
-    return this.service.getStatusMix(
-      this.parseFilters({
-        startDate,
-        endDate,
-        brands,
-        feeds,
-        writers,
-        editors,
-        contentTypes,
-        statuses,
-        allotters,
-      }),
-    );
+  getStatusMix(@Query() query: Record<string, any>) {
+    return this.service.getStatusMix(this.parseFilters(query));
   }
 
   @Get('feeds')
-  getFeedStats(
-    @Query('startDate') startDate: string,
-    @Query('endDate') endDate: string,
-    @Query('brands') brands: string,
-    @Query('feeds') feeds: string,
-    @Query('writers') writers: string,
-    @Query('editors') editors: string,
-    @Query('contentTypes') contentTypes: string,
-    @Query('statuses') statuses: string,
-    @Query('allotters') allotters: string,
-  ) {
-    return this.service.getFeedStats(
-      this.parseFilters({
-        startDate,
-        endDate,
-        brands,
-        feeds,
-        writers,
-        editors,
-        contentTypes,
-        statuses,
-        allotters,
-      }),
-    );
+  getFeedStats(@Query() query: Record<string, any>) {
+    return this.service.getFeedStats(this.parseFilters(query));
   }
 
   @Get('writers')
-  getWriterStats(
-    @Query('startDate') startDate: string,
-    @Query('endDate') endDate: string,
-    @Query('brands') brands: string,
-    @Query('feeds') feeds: string,
-    @Query('writers') writers: string,
-    @Query('editors') editors: string,
-    @Query('contentTypes') contentTypes: string,
-    @Query('statuses') statuses: string,
-    @Query('allotters') allotters: string,
-  ) {
-    return this.service.getWriterStats(
-      this.parseFilters({
-        startDate,
-        endDate,
-        brands,
-        feeds,
-        writers,
-        editors,
-        contentTypes,
-        statuses,
-        allotters,
-      }),
-    );
+  getWriterStats(@Query() query: Record<string, any>) {
+    return this.service.getWriterStats(this.parseFilters(query));
   }
 
   @Get('editors')
-  getEditorStats(
-    @Query('startDate') startDate: string,
-    @Query('endDate') endDate: string,
-    @Query('brands') brands: string,
-    @Query('feeds') feeds: string,
-    @Query('writers') writers: string,
-    @Query('editors') editors: string,
-    @Query('contentTypes') contentTypes: string,
-    @Query('statuses') statuses: string,
-    @Query('allotters') allotters: string,
-  ) {
-    return this.service.getEditorStats(
-      this.parseFilters({
-        startDate,
-        endDate,
-        brands,
-        feeds,
-        writers,
-        editors,
-        contentTypes,
-        statuses,
-        allotters,
-      }),
-    );
+  getEditorStats(@Query() query: Record<string, any>) {
+    return this.service.getEditorStats(this.parseFilters(query));
   }
 
   @Get('allotters')
-  getAllotterStats(
-    @Query('startDate') startDate: string,
-    @Query('endDate') endDate: string,
-    @Query('brands') brands: string,
-    @Query('feeds') feeds: string,
-    @Query('writers') writers: string,
-    @Query('editors') editors: string,
-    @Query('contentTypes') contentTypes: string,
-    @Query('statuses') statuses: string,
-    @Query('allotters') allotters: string,
-  ) {
-    return this.service.getAllotterStats(
-      this.parseFilters({
-        startDate,
-        endDate,
-        brands,
-        feeds,
-        writers,
-        editors,
-        contentTypes,
-        statuses,
-        allotters,
-      }),
-    );
+  getAllotterStats(@Query() query: Record<string, any>) {
+    return this.service.getAllotterStats(this.parseFilters(query));
+  }
+
+  @Get('production')
+  getProduction(@Query() query: Record<string, any>) {
+    return this.service.getProduction(this.parseFilters(query));
   }
 
   @Get('content-mix')
-  getContentMix(
-    @Query('startDate') startDate: string,
-    @Query('endDate') endDate: string,
-    @Query('granularity') granularity: string,
-    @Query('brands') brands: string,
-    @Query('feeds') feeds: string,
-    @Query('writers') writers: string,
-    @Query('editors') editors: string,
-    @Query('contentTypes') contentTypes: string,
-    @Query('statuses') statuses: string,
-    @Query('allotters') allotters: string,
-  ) {
+  getContentMix(@Query() query: Record<string, any>) {
     return this.service.getContentMix(
-      this.parseFilters({
-        startDate,
-        endDate,
-        brands,
-        feeds,
-        writers,
-        editors,
-        contentTypes,
-        statuses,
-        allotters,
-      }),
-      granularity || 'week',
+      this.parseFilters(query),
+      query.granularity || 'week',
     );
   }
 
   @Get('heatmap')
-  getHeatmap(
-    @Query('startDate') startDate: string,
-    @Query('endDate') endDate: string,
-    @Query('type') type: string,
-    @Query('brands') brands: string,
-    @Query('feeds') feeds: string,
-    @Query('writers') writers: string,
-    @Query('editors') editors: string,
-    @Query('contentTypes') contentTypes: string,
-    @Query('statuses') statuses: string,
-    @Query('allotters') allotters: string,
-  ) {
+  getHeatmap(@Query() query: Record<string, any>) {
     return this.service.getHeatmap(
-      this.parseFilters({
-        startDate,
-        endDate,
-        brands,
-        feeds,
-        writers,
-        editors,
-        contentTypes,
-        statuses,
-        allotters,
-      }),
-      type || 'calendar',
+      this.parseFilters(query),
+      query.type || 'calendar',
     );
   }
 
   @Get('writer-daily')
-  getWriterDailyBreakdown(
-    @Query('startDate') startDate: string,
-    @Query('endDate') endDate: string,
-    @Query('brands') brands: string,
-    @Query('feeds') feeds: string,
-    @Query('writers') writers: string,
-    @Query('editors') editors: string,
-    @Query('contentTypes') contentTypes: string,
-    @Query('statuses') statuses: string,
-    @Query('allotters') allotters: string,
-  ) {
-    return this.service.getWriterDailyBreakdown(
-      this.parseFilters({
-        startDate,
-        endDate,
-        brands,
-        feeds,
-        writers,
-        editors,
-        contentTypes,
-        statuses,
-        allotters,
-      }),
-    );
+  getWriterDailyBreakdown(@Query() query: Record<string, any>) {
+    return this.service.getWriterDailyBreakdown(this.parseFilters(query));
   }
 
   @Get('editor-daily')
-  getEditorDailyBreakdown(
-    @Query('startDate') startDate: string,
-    @Query('endDate') endDate: string,
-    @Query('brands') brands: string,
-    @Query('feeds') feeds: string,
-    @Query('writers') writers: string,
-    @Query('editors') editors: string,
-    @Query('contentTypes') contentTypes: string,
-    @Query('statuses') statuses: string,
-    @Query('allotters') allotters: string,
-  ) {
-    return this.service.getEditorDailyBreakdown(
-      this.parseFilters({
-        startDate,
-        endDate,
-        brands,
-        feeds,
-        writers,
-        editors,
-        contentTypes,
-        statuses,
-        allotters,
-      }),
-    );
+  getEditorDailyBreakdown(@Query() query: Record<string, any>) {
+    return this.service.getEditorDailyBreakdown(this.parseFilters(query));
+  }
+
+  @Get('stage-durations')
+  getStageDurations(@Query() query: Record<string, any>) {
+    return this.service.getStageDurations(this.parseFilters(query));
   }
 
   @Get('leakage')
-  getLeakage(
-    @Query('startDate') startDate: string,
-    @Query('endDate') endDate: string,
-    @Query('brands') brands: string,
-    @Query('feeds') feeds: string,
-    @Query('writers') writers: string,
-    @Query('editors') editors: string,
-    @Query('contentTypes') contentTypes: string,
-    @Query('statuses') statuses: string,
-    @Query('allotters') allotters: string,
-  ) {
-    return this.service.getLeakage(
-      this.parseFilters({
-        startDate,
-        endDate,
-        brands,
-        feeds,
-        writers,
-        editors,
-        contentTypes,
-        statuses,
-        allotters,
-      }),
-    );
+  getLeakage(@Query() query: Record<string, any>) {
+    return this.service.getLeakage(this.parseFilters(query));
   }
 
   @Get('repeating-titles')
-  getRepeatingTitles(
-    @Query('startDate') startDate: string,
-    @Query('endDate') endDate: string,
-    @Query('brands') brands: string,
-    @Query('feeds') feeds: string,
-    @Query('writers') writers: string,
-    @Query('editors') editors: string,
-    @Query('contentTypes') contentTypes: string,
-    @Query('statuses') statuses: string,
-    @Query('allotters') allotters: string,
-  ) {
-    return this.service.getRepeatingTitles(
-      this.parseFilters({
-        startDate,
-        endDate,
-        brands,
-        feeds,
-        writers,
-        editors,
-        contentTypes,
-        statuses,
-        allotters,
-      }),
-    );
+  getRepeatingTitles(@Query() query: Record<string, any>) {
+    return this.service.getRepeatingTitles(this.parseFilters(query));
+  }
+
+  @Get('stage-board')
+  getStageBoard(@Query() query: Record<string, any>) {
+    return this.service.getStageBoard(this.parseFilters(query));
+  }
+
+  @Get('people-availability')
+  getPeopleAvailability() {
+    return this.service.getPeopleAvailability();
+  }
+
+  @Get('category-split')
+  getCategorySplit(@Query() query: Record<string, any>) {
+    return this.service.getCategorySplit(this.parseFilters(query));
+  }
+
+  @Get('insights')
+  getInsights(@Query() query: Record<string, any>) {
+    return this.service.getInsights(this.parseFilters(query));
+  }
+
+  @Get('moderation')
+  getModeration(@Query() query: Record<string, any>) {
+    return this.service.getModeration(this.parseFilters(query));
+  }
+
+  @Get('duplicates')
+  getDuplicates(@Query() query: Record<string, any>) {
+    return this.service.getDuplicates(this.parseFilters(query));
   }
 }

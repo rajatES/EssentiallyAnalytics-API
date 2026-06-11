@@ -1,6 +1,10 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { google } from 'googleapis';
-import { ParsedSourceRow, ParsedAllotmentRow } from './types';
+import {
+  ParsedPiece,
+  ParsedRosterPerson,
+  ParsedModerationRow,
+} from './types';
 import {
   normalizeFeed,
   normalizeWriter,
@@ -8,122 +12,138 @@ import {
   normalizeAllotter,
   normalizeStatus,
   normalizeContentType,
+  normalizeCategory,
   parseSlides,
-  parseSheetsDate,
-  parseSheetsTimestamp,
+  parseDateTime,
+  reconcileTimestamps,
+  toDateOnly,
   computeRowHash,
-  isValidSourceRow,
-  isValidAllotmentRow,
+  normalizeTitleKey,
+  isValidPiece,
 } from './normalization';
 
 // ── Header matching helpers ──
 
-/** Canonical column keys we need from each sheet */
-type SourceColumnKey =
-  | 'rowId'
-  | 'date'
-  | 'brand'
-  | 'contentType'
+/** Canonical column keys we need from the integrated sheet. */
+type PieceColumnKey =
+  | 'id'
+  | 'uniquePieceId'
+  | 'category'
   | 'feed'
-  | 'writer'
-  | 'editor'
-  | 'status'
-  | 'slides'
-  | 'publishTimestamp'
-  | 'title';
-
-type AllotmentColumnKey =
+  | 'allottedAt'
   | 'allottedBy'
-  | 'date'
-  | 'brand'
-  | 'feed'
   | 'writer'
-  | 'contentType'
-  | 'status'
+  | 'title'
+  | 'primarySource'
+  | 'featuredImage'
   | 'slides'
-  | 'title';
+  | 'contentType'
+  | 'pickedBy'
+  | 'pickedAt'
+  | 'sourcesUsed'
+  | 'comments'
+  | 'stagingLink'
+  | 'submittedAt'
+  | 'editor'
+  | 'editorialStatus'
+  | 'verifyStart'
+  | 'verifyEnd'
+  | 'feedback'
+  | 'publishingStatus'
+  | 'publishedAt'
+  | 'kind';
 
-type ColumnMap<K extends string> = Record<K, number>;
+type ColumnMap = Partial<Record<PieceColumnKey, number>>;
 
-/**
- * Build a map from canonical column key → column index by matching header
- * text against known patterns. Matching is case-insensitive and ignores
- * leading/trailing whitespace. Returns `null` if any required column is
- * missing, logging which ones were not found.
- */
-function matchHeaders<K extends string>(
-  headerRow: any[],
-  patterns: { key: K; match: RegExp }[],
-  logger: Logger,
-  sheetLabel: string,
-): ColumnMap<K> | null {
-  const headers = headerRow.map(
-    (h) => h?.toString()?.trim()?.toLowerCase() ?? '',
-  );
-
-  const map: Partial<ColumnMap<K>> = {};
-  const missing: string[] = [];
-
-  for (const { key, match } of patterns) {
-    // Find the FIRST header that matches (avoids duplicate-column issues)
-    const idx = headers.findIndex((h) => match.test(h));
-    if (idx === -1) {
-      missing.push(key);
-    } else {
-      (map as any)[key] = idx;
-    }
-  }
-
-  if (missing.length > 0) {
-    logger.error(
-      `${sheetLabel}: could not locate columns: ${missing.join(', ')}. ` +
-        `Headers found: [${headers.join(', ')}]`,
-    );
-    return null;
-  }
-
-  logger.log(`${sheetLabel}: column mapping resolved → ${JSON.stringify(map)}`);
-  return map as ColumnMap<K>;
+interface ColumnPattern {
+  key: PieceColumnKey;
+  match: RegExp;
+  required?: boolean;
 }
 
-// ── Header patterns ──
-
-const SOURCE_HEADER_PATTERNS: { key: SourceColumnKey; match: RegExp }[] = [
-  { key: 'rowId', match: /^(row\s*id|sr\.?\s*no|s\.?\s*no|#|id)$/i },
-  { key: 'date', match: /^date$/i },
-  { key: 'brand', match: /^brand$/i },
-  { key: 'contentType', match: /^(content\s*type|type)$/i },
-  { key: 'feed', match: /^(feed|feed\s*\/\s*sub[- ]?category)$/i },
+/**
+ * Patterns are matched in order; each consumes the FIRST not-yet-claimed
+ * header that matches. Order matters where headers overlap — e.g. the manual
+ * "Publishing Time" vs the automatic "Publishing Time (Auto)", so the latter
+ * carries an explicit `(auto)` anchor.
+ */
+const PIECE_HEADER_PATTERNS: ColumnPattern[] = [
+  { key: 'id', match: /^id$/i, required: true },
+  { key: 'uniquePieceId', match: /^unique\s*piece\s*id$/i },
+  { key: 'category', match: /^sport\s*category$|^category$/i },
+  { key: 'feed', match: /^feed$/i },
+  { key: 'allottedAt', match: /^date\s*&?\s*time/i },
+  { key: 'allottedBy', match: /^allot(t)?ed\s*by$/i },
   { key: 'writer', match: /^writer$/i },
-  { key: 'editor', match: /^editor$/i },
-  { key: 'status', match: /^status$/i },
-  {
-    key: 'slides',
-    match: /^(no\.?\s*of\s*slides|slides|number\s*of\s*slides)$/i,
-  },
-  {
-    key: 'publishTimestamp',
-    match: /^(publish\s*(time|timestamp)|published?\s*at|timestamp)$/i,
-  },
   { key: 'title', match: /^title$/i },
+  { key: 'primarySource', match: /^primary\s*source$/i },
+  { key: 'featuredImage', match: /^featured\s*image$/i },
+  { key: 'slides', match: /^(no\.?\s*of\s*slides|number\s*of\s*slides|slides)$/i },
+  { key: 'contentType', match: /^type\s*\/?\s*category$|^type$/i },
+  { key: 'pickedBy', match: /^picked\s*by$/i },
+  { key: 'pickedAt', match: /^picked\s*at/i },
+  { key: 'sourcesUsed', match: /^sources?\s*used$/i },
+  { key: 'stagingLink', match: /^staging\s*link$/i },
+  { key: 'submittedAt', match: /^submitted/i },
+  { key: 'editor', match: /^editor$/i },
+  { key: 'editorialStatus', match: /^editorial\s*status$/i },
+  { key: 'verifyStart', match: /^ver[iy]f?ying\s*start/i },
+  { key: 'verifyEnd', match: /^ver[iy]f?ying\s*end/i },
+  { key: 'feedback', match: /^feedback$/i },
+  { key: 'publishingStatus', match: /^publishing\s*status$/i },
+  { key: 'publishedAt', match: /^publishing\s*time\s*\(auto\)/i },
+  { key: 'kind', match: /^__kind$/i },
+  // "Comments" is matched last so "Comments/TS" doesn't steal the plain one.
+  { key: 'comments', match: /^comments(\s*\/\s*ts)?$/i },
 ];
 
-const ALLOTMENT_HEADER_PATTERNS: {
-  key: AllotmentColumnKey;
+// ── Roster tab ──
+
+type RosterColumnKey = 'id' | 'division' | 'feed' | 'name' | 'role' | 'weekoff' | 'kind';
+
+const ROSTER_HEADER_PATTERNS: { key: RosterColumnKey; match: RegExp; required?: boolean }[] = [
+  { key: 'id', match: /^id$/i, required: true },
+  { key: 'division', match: /^sport\s*category$|^division$|^category$/i },
+  { key: 'feed', match: /^feed$/i },
+  { key: 'name', match: /^name$/i, required: true },
+  { key: 'role', match: /^role$/i },
+  { key: 'weekoff', match: /^week\s*-?\s*off$/i },
+  { key: 'kind', match: /^__kind$/i },
+];
+
+// ── Moderation log sheet (external moderation tool) ──
+
+type ModerationColumnKey =
+  | 'date'
+  | 'title'
+  | 'user'
+  | 'feed'
+  | 'category'
+  | 'riskRating'
+  | 'overallResult'
+  | 'reason'
+  | 'tbScore'
+  | 'legalScore'
+  | 'feedScore'
+  | 'subjectiveScore';
+
+const MODERATION_HEADER_PATTERNS: {
+  key: ModerationColumnKey;
   match: RegExp;
+  required?: boolean;
 }[] = [
-  { key: 'allottedBy', match: /^allot(ted|ter)?\s*by$/i },
-  { key: 'date', match: /^date$/i },
-  { key: 'brand', match: /^brand$/i },
-  { key: 'feed', match: /^(feed|feed\s*\/\s*sub[- ]?category)$/i },
-  { key: 'writer', match: /^writer$/i },
-  { key: 'contentType', match: /^(content\s*type|type)$/i },
-  { key: 'status', match: /^status$/i },
-  {
-    key: 'slides',
-    match: /^(no\.?\s*of\s*slides|slides|number\s*of\s*slides)$/i,
-  },
-  { key: 'title', match: /^title$/i },
+  { key: 'date', match: /^date$/i, required: true },
+  { key: 'title', match: /^title$/i, required: true },
+  { key: 'user', match: /^user$|^checked\s*by$/i },
+  { key: 'feed', match: /^feed$/i },
+  { key: 'category', match: /^category$/i },
+  { key: 'riskRating', match: /^risk\s*rating$/i },
+  { key: 'overallResult', match: /^overall\s*result$/i },
+  { key: 'reason', match: /^reason$/i },
+  { key: 'tbScore', match: /^tb\s*score$/i },
+  { key: 'legalScore', match: /^legal\s*score$/i },
+  { key: 'feedScore', match: /^feed\s*score$/i },
+  { key: 'subjectiveScore', match: /^subjective\s*score$/i },
 ];
 
 @Injectable()
@@ -136,16 +156,50 @@ export class SheetsSyncService {
     });
   }
 
-  // ── Source sheet ──
+  /**
+   * Build canonical-key → column-index map. Each pattern claims the first
+   * unclaimed matching header. Aborts (returns null) if a required column
+   * is missing.
+   */
+  private matchHeaders(headerRow: any[]): ColumnMap | null {
+    const headers = headerRow.map(
+      (h) => h?.toString()?.trim()?.toLowerCase() ?? '',
+    );
+    const claimed = new Set<number>();
+    const map: ColumnMap = {};
+    const missingRequired: string[] = [];
 
-  async fetchSourceSheet(): Promise<ParsedSourceRow[]> {
-    const sheetId = process.env.MSN_SOURCE_SHEET_ID;
-    const tabName = process.env.MSN_SOURCE_TAB_NAME || 'Sheet1';
+    for (const { key, match, required } of PIECE_HEADER_PATTERNS) {
+      const idx = headers.findIndex((h, i) => !claimed.has(i) && match.test(h));
+      if (idx === -1) {
+        if (required) missingRequired.push(key);
+        continue;
+      }
+      claimed.add(idx);
+      map[key] = idx;
+    }
+
+    if (missingRequired.length > 0) {
+      this.logger.error(
+        `Integrated sheet: missing required columns: ${missingRequired.join(
+          ', ',
+        )}. Headers found: [${headers.join(', ')}]`,
+      );
+      return null;
+    }
+
+    this.logger.log(
+      `Integrated sheet: column mapping resolved → ${JSON.stringify(map)}`,
+    );
+    return map;
+  }
+
+  async fetchPieces(): Promise<ParsedPiece[]> {
+    const sheetId = process.env.MSN_SHEET_ID;
+    const tabName = process.env.MSN_TAB_NAME || 'Sheet1';
 
     if (!sheetId) {
-      this.logger.warn(
-        'MSN_SOURCE_SHEET_ID not configured, skipping source sheet sync',
-      );
+      this.logger.warn('MSN_SHEET_ID not configured, skipping sync');
       return [];
     }
 
@@ -155,62 +209,123 @@ export class SheetsSyncService {
 
       const res = await sheets.spreadsheets.values.get({
         spreadsheetId: sheetId,
-        range: `'${tabName}'!A:Z`,
+        range: `'${tabName}'!A:AB`,
+        valueRenderOption: 'UNFORMATTED_VALUE',
+        dateTimeRenderOption: 'SERIAL_NUMBER',
       });
 
       const rows = res.data.values;
       if (!rows || rows.length < 2) return [];
 
-      // Dynamically resolve column positions from the header row
-      const colMap = matchHeaders<SourceColumnKey>(
-        rows[0],
-        SOURCE_HEADER_PATTERNS,
-        this.logger,
-        'Source sheet',
-      );
+      const colMap = this.matchHeaders(rows[0]);
       if (!colMap) {
-        this.logger.error(
-          'Source sheet: aborting sync — column mapping failed',
-        );
+        this.logger.error('Integrated sheet: aborting sync — header match failed');
         return [];
       }
 
       let skipped = 0;
-      const parsed: ParsedSourceRow[] = [];
+      const parsed: ParsedPiece[] = [];
 
       for (const row of rows.slice(1)) {
-        const result = this.parseSourceRow(row, colMap);
-        if (result) {
-          parsed.push(result);
-        } else {
-          skipped++;
-        }
+        const result = this.parsePiece(row, colMap);
+        if (result) parsed.push(result);
+        else skipped++;
       }
 
       if (skipped > 0) {
-        this.logger.warn(
-          `Source sheet: skipped ${skipped} invalid/incomplete rows`,
-        );
+        this.logger.warn(`Integrated sheet: skipped ${skipped} invalid rows`);
       }
 
       return parsed;
     } catch (error: any) {
-      this.logger.error(`Failed to fetch source sheet: ${error.message}`);
+      this.logger.error(`Failed to fetch integrated sheet: ${error.message}`);
       throw error;
     }
   }
 
-  // ── Allotment sheet ──
+  /** Fetch roster rows from the Roster tab (division / feed / role / weekoff). */
+  async fetchRoster(): Promise<ParsedRosterPerson[]> {
+    const sheetId = process.env.MSN_SHEET_ID;
+    const tabName = process.env.MSN_ROSTER_TAB_NAME || 'Roster';
 
-  async fetchAllotmentSheet(): Promise<ParsedAllotmentRow[]> {
-    const sheetId = process.env.MSN_ALLOTMENT_SHEET_ID;
-    const tabName =
-      process.env.MSN_ALLOTMENT_TAB_NAME || 'Master Allotment Sheet DB';
+    if (!sheetId) return [];
+
+    try {
+      const auth = this.getAuth();
+      const sheets = google.sheets({ version: 'v4', auth });
+
+      const res = await sheets.spreadsheets.values.get({
+        spreadsheetId: sheetId,
+        range: `'${tabName}'!A:H`,
+        valueRenderOption: 'UNFORMATTED_VALUE',
+        dateTimeRenderOption: 'SERIAL_NUMBER',
+      });
+
+      const rows = res.data.values;
+      if (!rows || rows.length < 2) return [];
+
+      const headers = rows[0].map(
+        (h: any) => h?.toString()?.trim()?.toLowerCase() ?? '',
+      );
+      const claimed = new Set<number>();
+      const col: Partial<Record<RosterColumnKey, number>> = {};
+      for (const { key, match, required } of ROSTER_HEADER_PATTERNS) {
+        const idx = headers.findIndex(
+          (h: string, i: number) => !claimed.has(i) && match.test(h),
+        );
+        if (idx === -1) {
+          if (required) {
+            this.logger.error(`Roster tab: missing required column "${key}"`);
+            return [];
+          }
+          continue;
+        }
+        claimed.add(idx);
+        col[key] = idx;
+      }
+
+      const text = (row: any[], key: RosterColumnKey): string => {
+        const idx = col[key];
+        const v = idx === undefined ? undefined : row[idx];
+        return v == null ? '' : v.toString().trim();
+      };
+
+      const parsed: ParsedRosterPerson[] = [];
+      for (const row of rows.slice(1)) {
+        const id = text(row, 'id');
+        const name = text(row, 'name');
+        if (!id || !name) continue;
+        const kind = text(row, 'kind').toLowerCase();
+        if (kind && kind !== 'roster') continue;
+
+        parsed.push({
+          id,
+          division: text(row, 'division') || 'Unknown',
+          feed: text(row, 'feed') || 'Unknown',
+          name,
+          role: text(row, 'role'),
+          weekoff: text(row, 'weekoff'),
+          rawHash: computeRowHash(row),
+        });
+      }
+
+      return parsed;
+    } catch (error: any) {
+      this.logger.error(`Failed to fetch roster tab: ${error.message}`);
+      return [];
+    }
+  }
+
+  /**
+   * Fetch moderation check rows from the external moderation tool's log
+   * sheet. Failures return an empty array so the existing data is preserved.
+   */
+  async fetchModeration(): Promise<ParsedModerationRow[]> {
+    const sheetId = process.env.MSN_MODERATION_SHEET_ID;
+    const tabName = process.env.MSN_MODERATION_TAB_NAME || 'Sheet1';
 
     if (!sheetId) {
-      this.logger.warn(
-        'MSN_ALLOTMENT_SHEET_ID not configured, skipping allotment sheet sync',
-      );
+      this.logger.warn('MSN_MODERATION_SHEET_ID not configured, skipping moderation sync');
       return [];
     }
 
@@ -220,105 +335,115 @@ export class SheetsSyncService {
 
       const res = await sheets.spreadsheets.values.get({
         spreadsheetId: sheetId,
-        range: `'${tabName}'!A:Z`,
+        range: `'${tabName}'!A:T`,
+        valueRenderOption: 'UNFORMATTED_VALUE',
+        dateTimeRenderOption: 'SERIAL_NUMBER',
       });
 
       const rows = res.data.values;
       if (!rows || rows.length < 2) return [];
 
-      // Dynamically resolve column positions from the header row
-      const colMap = matchHeaders<AllotmentColumnKey>(
-        rows[0],
-        ALLOTMENT_HEADER_PATTERNS,
-        this.logger,
-        'Allotment sheet',
+      const headers = rows[0].map(
+        (h: any) => h?.toString()?.trim()?.toLowerCase() ?? '',
       );
-      if (!colMap) {
-        this.logger.error(
-          'Allotment sheet: aborting sync — column mapping failed',
+      const claimed = new Set<number>();
+      const col: Partial<Record<ModerationColumnKey, number>> = {};
+      for (const { key, match, required } of MODERATION_HEADER_PATTERNS) {
+        const idx = headers.findIndex(
+          (h: string, i: number) => !claimed.has(i) && match.test(h),
         );
-        return [];
+        if (idx === -1) {
+          if (required) {
+            this.logger.error(`Moderation sheet: missing required column "${key}"`);
+            return [];
+          }
+          continue;
+        }
+        claimed.add(idx);
+        col[key] = idx;
       }
 
-      let skipped = 0;
-      const parsed: ParsedAllotmentRow[] = [];
+      const text = (row: any[], key: ModerationColumnKey): string => {
+        const idx = col[key];
+        const v = idx === undefined ? undefined : row[idx];
+        return v == null ? '' : v.toString().trim();
+      };
 
+      const parsed = new Map<string, ParsedModerationRow>();
+      let skipped = 0;
       for (const row of rows.slice(1)) {
-        const result = this.parseAllotmentRow(row, colMap);
-        if (result) {
-          parsed.push(result);
-        } else {
+        // Some rows carry multi-KB junk in the title cell; cap defensively.
+        const title = text(row, 'title').slice(0, 500);
+        const rawDate = text(row, 'date');
+        if (!title || !rawDate) {
           skipped++;
+          continue;
         }
+
+        const rawRisk = text(row, 'riskRating');
+        const risk = rawRisk === '' ? NaN : Number(rawRisk);
+        const rawResult =
+          col.overallResult === undefined ? undefined : row[col.overallResult];
+
+        const entry: ParsedModerationRow = {
+          // Stable identity: same timestamp + title + user = same check.
+          id: computeRowHash([rawDate, title, text(row, 'user')]),
+          checkedAt: parseDateTime(
+            col.date === undefined ? undefined : row[col.date],
+          ),
+          title,
+          titleNorm: normalizeTitleKey(title),
+          checkedBy: text(row, 'user') || 'Unknown',
+          feed: text(row, 'feed') || 'Unknown',
+          category: text(row, 'category') || 'Unknown',
+          riskRating: isNaN(risk) ? null : Math.round(risk),
+          overallResult:
+            rawResult === true ||
+            String(rawResult ?? '').trim().toLowerCase() === 'true',
+          reason: text(row, 'reason'),
+          tbScore: text(row, 'tbScore').toUpperCase(),
+          legalScore: text(row, 'legalScore').toUpperCase(),
+          feedScore: text(row, 'feedScore').toUpperCase(),
+          subjectiveScore: text(row, 'subjectiveScore').toUpperCase(),
+          rawHash: computeRowHash(row.slice(0, 16)),
+        };
+        parsed.set(entry.id, entry); // dedupes identical re-runs
       }
 
       if (skipped > 0) {
-        this.logger.warn(
-          `Allotment sheet: skipped ${skipped} invalid/incomplete rows`,
-        );
+        this.logger.warn(`Moderation sheet: skipped ${skipped} rows without title/date`);
       }
 
-      return parsed;
+      return [...parsed.values()];
     } catch (error: any) {
-      this.logger.error(`Failed to fetch allotment sheet: ${error.message}`);
-      throw error;
+      this.logger.error(`Failed to fetch moderation sheet: ${error.message}`);
+      return [];
     }
   }
 
-  // ── Row parsers (now use dynamic column maps) ──
-
-  private parseSourceRow(
-    row: any[],
-    col: ColumnMap<SourceColumnKey>,
-  ): ParsedSourceRow | null {
-    const rowId = row[col.rowId]?.toString()?.trim();
-    if (!rowId) return null;
-
-    const contentType = normalizeContentType(row[col.contentType]?.toString());
-    let numberOfSlides = parseSlides(row[col.slides]);
-
-    // Articles are always 1 piece regardless of slide count
-    if (contentType === 'Article') {
-      numberOfSlides = 1;
-    }
-    // Slideshows with 0 slides is a data entry error — treat as unknown
-    if (
-      (contentType === 'Slideshow' || contentType === 'SS Automation') &&
-      numberOfSlides === 0
-    ) {
-      numberOfSlides = null;
-    }
-
-    const parsed = {
-      rowId,
-      date: parseSheetsDate(row[col.date]),
-      brand: row[col.brand]?.toString()?.trim() || 'Unknown',
-      contentType,
-      feed: normalizeFeed(row[col.feed]?.toString()),
-      writer: normalizeWriter(row[col.writer]?.toString()),
-      editor: normalizeEditor(row[col.editor]?.toString()),
-      status: normalizeStatus(row[col.status]?.toString()),
-      numberOfSlides,
-      publishTimestamp: parseSheetsTimestamp(row[col.publishTimestamp]),
-      title: row[col.title]?.toString()?.trim() || '',
-      rawHash: computeRowHash(row),
-    };
-
-    if (!isValidSourceRow(parsed)) return null;
-
-    return parsed;
+  private cell(row: any[], col: ColumnMap, key: PieceColumnKey): any {
+    const idx = col[key];
+    return idx === undefined ? undefined : row[idx];
   }
 
-  private parseAllotmentRow(
-    row: any[],
-    col: ColumnMap<AllotmentColumnKey>,
-  ): ParsedAllotmentRow | null {
-    const brand = row[col.brand]?.toString()?.trim();
-    if (!brand) return null;
+  private text(row: any[], col: ColumnMap, key: PieceColumnKey): string {
+    const v = this.cell(row, col, key);
+    return v == null ? '' : v.toString().trim();
+  }
 
-    const contentType = normalizeContentType(row[col.contentType]?.toString());
-    let slides = parseSlides(row[col.slides]);
+  private parsePiece(row: any[], col: ColumnMap): ParsedPiece | null {
+    const id = this.text(row, col, 'id');
+    if (!id) return null;
 
+    // The integrated sheet tags content rows with __kind='content'; skip any
+    // other kind (e.g. roster rows) that might appear on this tab.
+    const kind = this.text(row, col, 'kind').toLowerCase();
+    if (kind && kind !== 'content') return null;
+
+    const contentType = normalizeContentType(
+      this.text(row, col, 'contentType'),
+    );
+    let slides = parseSlides(this.cell(row, col, 'slides'));
     if (contentType === 'Article') {
       slides = 1;
     }
@@ -329,20 +454,59 @@ export class SheetsSyncService {
       slides = null;
     }
 
-    const parsed = {
-      allottedBy: normalizeAllotter(row[col.allottedBy]?.toString()),
-      date: parseSheetsDate(row[col.date]),
-      brand,
-      feed: normalizeFeed(row[col.feed]?.toString()),
-      writer: normalizeWriter(row[col.writer]?.toString()),
+    // Parse in lifecycle order, then repair DD/MM↔MM/DD encoding swaps the
+    // source sheet introduces (some stamps otherwise land in the future).
+    const [
+      allottedAt,
+      pickedAt,
+      submittedAt,
+      verifyStart,
+      verifyEnd,
+      publishedAt,
+    ] = reconcileTimestamps([
+      parseDateTime(this.cell(row, col, 'allottedAt')),
+      parseDateTime(this.cell(row, col, 'pickedAt')),
+      parseDateTime(this.cell(row, col, 'submittedAt')),
+      parseDateTime(this.cell(row, col, 'verifyStart')),
+      parseDateTime(this.cell(row, col, 'verifyEnd')),
+      parseDateTime(this.cell(row, col, 'publishedAt')),
+    ]);
+
+    // Production date = allotment date, falling back through the lifecycle.
+    const dateAnchor =
+      allottedAt || pickedAt || submittedAt || publishedAt || null;
+
+    const parsed: ParsedPiece = {
+      id,
+      uniquePieceId: this.text(row, col, 'uniquePieceId'),
+      category: normalizeCategory(this.text(row, col, 'category')),
+      feed: normalizeFeed(this.text(row, col, 'feed')),
+      writer: normalizeWriter(this.text(row, col, 'writer')),
+      editor: normalizeEditor(this.text(row, col, 'editor')),
+      allottedBy: normalizeAllotter(this.text(row, col, 'allottedBy')),
       contentType,
-      status: normalizeStatus(row[col.status]?.toString()),
+      publishingStatus: normalizeStatus(this.text(row, col, 'publishingStatus')),
+      editorialStatus: normalizeStatus(this.text(row, col, 'editorialStatus')),
       slides,
-      title: row[col.title]?.toString()?.trim() || '',
+      allottedAt,
+      pickedAt,
+      submittedAt,
+      verifyStart,
+      verifyEnd,
+      publishedAt,
+      date: toDateOnly(dateAnchor),
+      title: this.text(row, col, 'title'),
+      pickedBy: this.text(row, col, 'pickedBy'),
+      primarySource: this.text(row, col, 'primarySource'),
+      sourcesUsed: this.text(row, col, 'sourcesUsed'),
+      stagingLink: this.text(row, col, 'stagingLink'),
+      featuredImage: this.text(row, col, 'featuredImage'),
+      feedback: this.text(row, col, 'feedback'),
+      comments: this.text(row, col, 'comments'),
       rawHash: computeRowHash(row),
     };
 
-    if (!isValidAllotmentRow(parsed)) return null;
+    if (!isValidPiece(parsed)) return null;
 
     return parsed;
   }

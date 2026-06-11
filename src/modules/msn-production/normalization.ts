@@ -132,6 +132,7 @@ const ALLOTTER_ALIASES: Record<string, string> = {
 
 const STATUS_ALIASES: Record<string, string> = {
   'on hold': 'On Hold',
+  'on-hold': 'On Hold',
   published: 'Published',
   publishing: 'Published',
   'pr published': 'Published (PR)',
@@ -214,6 +215,13 @@ export function normalizeContentType(raw: string | null | undefined): string {
   return trimmed;
 }
 
+export function normalizeCategory(raw: string | null | undefined): string {
+  if (!raw) return 'Unknown';
+  const cleaned = raw.replace(/\s+/g, ' ').trim();
+  if (!cleaned) return 'Unknown';
+  return cleaned;
+}
+
 // ── Data cleaning: slides ──
 
 export function parseSlides(raw: any): number | null {
@@ -248,56 +256,60 @@ function isReasonableDate(d: Date): boolean {
   return !isNaN(t) && t >= REASONABLE_MIN && t <= REASONABLE_MAX;
 }
 
-export function parseSheetsDate(raw: any): string | null {
+/**
+ * Parse a date/time cell into a Date. The integrated sheet is authored in
+ * DD/MM/YYYY (Indian) locale, so slash/dash/dot strings are interpreted
+ * day-first. ISO strings and Sheets serial numbers are also supported.
+ */
+export function parseDateTime(raw: any): Date | null {
   if (raw == null || raw === '' || raw === ' ') return null;
+
+  if (raw instanceof Date) {
+    return isReasonableDate(raw) ? raw : null;
+  }
 
   if (typeof raw === 'string') {
     const trimmed = raw.trim();
     if (!trimmed) return null;
 
-    // Try direct parse
-    const d = new Date(trimmed);
-    if (isReasonableDate(d)) return d.toISOString().split('T')[0];
-
-    // Try DD/MM/YYYY or DD-MM-YYYY format
-    const parts = trimmed.split(/[\/\-\.]/);
-    if (parts.length === 3) {
-      const [a, b, c] = parts.map(Number);
-      if (c > 1000) {
-        // a/b/c where c is year
-        const attempt = new Date(c, b - 1, a);
-        if (isReasonableDate(attempt))
-          return attempt.toISOString().split('T')[0];
-      }
+    // ISO-8601 (YYYY-MM-DD[THH:mm...]) — unambiguous, parse directly.
+    if (/^\d{4}-\d{2}-\d{2}/.test(trimmed)) {
+      const iso = new Date(trimmed);
+      return isReasonableDate(iso) ? iso : null;
     }
 
-    return null;
-  }
+    // DD/MM/YYYY [HH:mm[:ss]] — split date and optional time parts.
+    const [datePart, ...timeParts] = trimmed.split(/[ T]/);
+    const parts = datePart.split(/[\/\-.]/).map((p) => Number(p));
+    if (parts.length === 3 && parts.every((n) => !isNaN(n))) {
+      let [day, month, year] = parts;
+      if (year < 100) year += 2000;
 
-  // Sheets serial date number
-  if (typeof raw === 'number') {
-    // Valid date serials: ~43831 (2020-01-01) to ~47482 (2030-01-01)
-    if (raw < 30000 || raw > 55000) return null;
-    const epoch = new Date(1899, 11, 30);
-    epoch.setDate(epoch.getDate() + Math.floor(raw));
-    if (isReasonableDate(epoch)) return epoch.toISOString().split('T')[0];
-    return null;
-  }
+      // If "day" can't be a day but "month" can, the cell is MM/DD — swap.
+      if (day > 31 && month <= 31) [day, month] = [month, day];
+      else if (month > 12 && day <= 12) [day, month] = [month, day];
 
-  return null;
-}
+      let hh = 0;
+      let mm = 0;
+      let ss = 0;
+      if (timeParts.length) {
+        const t = timeParts.join(' ').match(/(\d{1,2}):(\d{2})(?::(\d{2}))?/);
+        if (t) {
+          hh = Number(t[1]);
+          mm = Number(t[2]);
+          ss = Number(t[3] || 0);
+        }
+      }
+      const attempt = new Date(year, month - 1, day, hh, mm, ss);
+      if (isReasonableDate(attempt)) return attempt;
+    }
 
-export function parseSheetsTimestamp(raw: any): Date | null {
-  if (raw == null || raw === '' || raw === ' ') return null;
-
-  if (typeof raw === 'string') {
-    const trimmed = raw.trim();
-    if (!trimmed) return null;
+    // Last resort: native parse.
     const d = new Date(trimmed);
-    if (isReasonableDate(d)) return d;
-    return null;
+    return isReasonableDate(d) ? d : null;
   }
 
+  // Sheets serial number (date + fractional time).
   if (typeof raw === 'number') {
     if (raw < 30000 || raw > 55000) return null;
     const epoch = new Date(1899, 11, 30);
@@ -307,11 +319,89 @@ export function parseSheetsTimestamp(raw: any): Date | null {
     epoch.setMilliseconds(
       epoch.getMilliseconds() + Math.round(fraction * 86400000),
     );
-    if (isReasonableDate(epoch)) return epoch;
-    return null;
+    return isReasonableDate(epoch) ? epoch : null;
   }
 
   return null;
+}
+
+/** Date-only (YYYY-MM-DD) extraction from a parsed Date. */
+export function toDateOnly(d: Date | null): string | null {
+  if (!d) return null;
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+/** Swap day↔month (preserving time). Null if the day can't be a month (>12). */
+function swapDayMonth(d: Date): Date | null {
+  const day = d.getDate();
+  const month = d.getMonth() + 1;
+  if (day > 12) return null; // already unambiguous — a month can't exceed 12
+  const swapped = new Date(
+    d.getFullYear(),
+    day - 1,
+    month,
+    d.getHours(),
+    d.getMinutes(),
+    d.getSeconds(),
+  );
+  return isReasonableDate(swapped) ? swapped : null;
+}
+
+/**
+ * Repair DD/MM vs MM/DD confusion in one row's lifecycle timestamps. The source
+ * sheet mixes both encodings — roughly a quarter of rows arrive with month/day
+ * swapped, landing in the future. Two principled passes using facts that must
+ * hold for auto-populated timestamps:
+ *   1. They cannot be in the future — if swapping pulls a future stamp into the
+ *      past, it was swapped.
+ *   2. A single piece's stamps cluster on one calendar day — swap any outlier
+ *      that, once swapped, matches the row's majority date.
+ * Input/output are positional (lifecycle order); nulls pass through untouched.
+ */
+export function reconcileTimestamps(
+  dates: (Date | null)[],
+  now: Date = new Date(),
+): (Date | null)[] {
+  const out = dates.slice();
+  const nowMs = now.getTime();
+
+  // Pass 1 — future guard.
+  for (let i = 0; i < out.length; i++) {
+    const d = out[i];
+    if (d && d.getTime() > nowMs) {
+      const sw = swapDayMonth(d);
+      if (sw && sw.getTime() <= nowMs) out[i] = sw;
+    }
+  }
+
+  // Pass 2 — intra-row consensus.
+  const counts = new Map<string, number>();
+  for (const d of out) {
+    if (!d) continue;
+    const k = toDateOnly(d)!;
+    counts.set(k, (counts.get(k) || 0) + 1);
+  }
+  let modal = '';
+  let best = 0;
+  for (const [k, n] of counts) {
+    if (n > best) {
+      best = n;
+      modal = k;
+    }
+  }
+  if (best >= 2) {
+    for (let i = 0; i < out.length; i++) {
+      const d = out[i];
+      if (!d || toDateOnly(d) === modal) continue;
+      const sw = swapDayMonth(d);
+      if (sw && toDateOnly(sw) === modal) out[i] = sw;
+    }
+  }
+
+  return out;
 }
 
 // ── Row hash for change detection ──
@@ -321,28 +411,35 @@ export function computeRowHash(values: any[]): string {
   return crypto.createHash('md5').update(str).digest('hex');
 }
 
-// ── Row validation ──
-
-export function isValidSourceRow(row: {
-  rowId: string;
-  brand: string;
-  contentType: string;
-  feed: string;
-  writer: string;
-}): boolean {
-  if (!row.rowId) return false;
-  if (!row.brand || row.brand === 'Unknown') return false;
-  if (row.contentType === 'Unknown') return false;
-  if (row.feed === 'Unknown' && row.writer === 'Unknown') return false;
-  return true;
+/**
+ * Normalize a title for cross-sheet matching: lowercase, collapse whitespace,
+ * strip surrounding quotes and trailing punctuation. Keeps inner punctuation
+ * so distinct titles stay distinct.
+ */
+export function normalizeTitleKey(title: string): string {
+  return (title || '')
+    .toLowerCase()
+    .replace(/[‘’“”]/g, "'") // smart → straight quotes
+    .replace(/\s+/g, ' ')
+    .replace(/^["']+|["'.\s]+$/g, '')
+    .trim();
 }
 
-export function isValidAllotmentRow(row: {
-  brand: string;
+// ── Row validation ──
+
+export function isValidPiece(row: {
+  id: string;
   feed: string;
   writer: string;
+  title: string;
 }): boolean {
-  if (!row.brand || row.brand === 'Unknown') return false;
-  if (row.feed === 'Unknown' && row.writer === 'Unknown') return false;
+  if (!row.id) return false;
+  // A usable piece needs at least one identifying dimension.
+  if (
+    row.feed === 'Unknown' &&
+    row.writer === 'Unknown' &&
+    !row.title.trim()
+  )
+    return false;
   return true;
 }
