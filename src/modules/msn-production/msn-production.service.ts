@@ -12,7 +12,7 @@ import { SheetsSyncService } from './sheets-sync.service';
 import { MsnPiece } from './entities/msn-piece.entity';
 import { MsnRosterPerson } from './entities/msn-roster-person.entity';
 import { MsnModerationRow } from './entities/msn-moderation-row.entity';
-import { normalizeTitleKey } from './normalization';
+import { normalizeTitleKey, toDateOnly } from './normalization';
 import {
   MsnFilterParams,
   KpiOverview,
@@ -151,7 +151,11 @@ export class MsnProductionService {
         const existingHashes = new Map<string, string>();
         for (const row of existing) existingHashes.set(row.id, row.rawHash);
 
-        const toUpsert: MsnPiece[] = [];
+        // Keyed by id (last-wins): the integrated sheet can hold two rows that
+        // hash to the same piece id (identical category/feed/title/allot time),
+        // and a single upsert batch must not target the same id twice — Postgres
+        // rejects with "ON CONFLICT DO UPDATE cannot affect row a second time".
+        const toUpsert = new Map<string, MsnPiece>();
         const incomingIds = new Set<string>();
 
         for (const p of pieces) {
@@ -160,14 +164,15 @@ export class MsnProductionService {
 
           const entity = new MsnPiece();
           Object.assign(entity, p);
-          toUpsert.push(entity);
+          toUpsert.set(p.id, entity);
         }
 
-        if (toUpsert.length > 0) {
-          for (let i = 0; i < toUpsert.length; i += 500) {
-            await this.pieceRepo.upsert(toUpsert.slice(i, i + 500), ['id']);
+        if (toUpsert.size > 0) {
+          const rows = [...toUpsert.values()];
+          for (let i = 0; i < rows.length; i += 500) {
+            await this.pieceRepo.upsert(rows.slice(i, i + 500), ['id']);
           }
-          this.logger.log(`Pieces: upserted ${toUpsert.length} changed rows`);
+          this.logger.log(`Pieces: upserted ${rows.length} changed rows`);
         }
 
         const staleIds = [...existingHashes.keys()].filter(
@@ -191,20 +196,23 @@ export class MsnProductionService {
         const existingHashes = new Map<string, string>();
         for (const row of existing) existingHashes.set(row.id, row.rawHash);
 
-        const toUpsert: MsnRosterPerson[] = [];
+        // Keyed by id (last-wins) so duplicate roster ids never land in the
+        // same upsert batch (see pieces block above).
+        const toUpsert = new Map<string, MsnRosterPerson>();
         const incomingIds = new Set<string>();
         for (const r of roster) {
           incomingIds.add(r.id);
           if (existingHashes.get(r.id) === r.rawHash) continue;
           const entity = new MsnRosterPerson();
           Object.assign(entity, r);
-          toUpsert.push(entity);
+          toUpsert.set(r.id, entity);
         }
-        if (toUpsert.length > 0) {
-          for (let i = 0; i < toUpsert.length; i += 500) {
-            await this.rosterRepo.upsert(toUpsert.slice(i, i + 500), ['id']);
+        if (toUpsert.size > 0) {
+          const rows = [...toUpsert.values()];
+          for (let i = 0; i < rows.length; i += 500) {
+            await this.rosterRepo.upsert(rows.slice(i, i + 500), ['id']);
           }
-          this.logger.log(`Roster: upserted ${toUpsert.length} changed rows`);
+          this.logger.log(`Roster: upserted ${rows.length} changed rows`);
         }
         const staleIds = [...existingHashes.keys()].filter(
           (id) => !incomingIds.has(id),
@@ -282,14 +290,16 @@ export class MsnProductionService {
 
   // ── Filtering helpers ──
 
-  private buildWhere(params: MsnFilterParams): any {
+  private buildWhere(params: MsnFilterParams, includeDate = true): any {
     const where: any = {};
-    if (params.startDate && params.endDate) {
-      where.date = Between(params.startDate, params.endDate);
-    } else if (params.startDate) {
-      where.date = MoreThanOrEqual(params.startDate);
-    } else if (params.endDate) {
-      where.date = LessThanOrEqual(params.endDate);
+    if (includeDate) {
+      if (params.startDate && params.endDate) {
+        where.date = Between(params.startDate, params.endDate);
+      } else if (params.startDate) {
+        where.date = MoreThanOrEqual(params.startDate);
+      } else if (params.endDate) {
+        where.date = LessThanOrEqual(params.endDate);
+      }
     }
     if (params.categories?.length) where.category = In(params.categories);
     if (params.feeds?.length) where.feed = In(params.feeds);
@@ -315,6 +325,23 @@ export class MsnProductionService {
    */
   private async filter(params: MsnFilterParams): Promise<MsnPiece[]> {
     return this.dedupePieces(await this.filterRaw(params));
+  }
+
+  /**
+   * Deduped fetch where the date range is applied against a chosen lifecycle
+   * anchor (picked / verify) instead of the allotment-anchored `date` column.
+   * Used for writer- and editor-centric views so a piece counts on the day the
+   * person actually worked it, not the day it was handed out. Non-date filters
+   * (category/feed/…) still apply in SQL; the date window is matched in JS.
+   */
+  private async filterByAnchor(
+    params: MsnFilterParams,
+    anchor: 'allotment' | 'picked' | 'verify',
+  ): Promise<MsnPiece[]> {
+    const rows = this.dedupePieces(
+      await this.pieceRepo.find({ where: this.buildWhere(params, false) }),
+    );
+    return rows.filter((r) => this.inRange(this.anchorDay(r, anchor), params));
   }
 
   /** Lifecycle stage a piece has reached — used to pick the truest dup row. */
@@ -384,6 +411,50 @@ export class MsnProductionService {
 
   private isScheduled(p: MsnPiece): boolean {
     return SCHEDULED_STATUSES.includes(p.publishingStatus);
+  }
+
+  /**
+   * A piece counts as "published" for output metrics once it is live or locked
+   * in to go live: Published / Published (PR) / Scheduled / Scheduled (PR). The
+   * team treats scheduled work as done, so every published count and publish
+   * rate includes it (only the actual publish-timestamp analytics — heatmap,
+   * weekday rhythm, momentum — stay on real publish events).
+   */
+  private countsAsPublished(p: MsnPiece): boolean {
+    return this.isPublished(p) || this.isScheduled(p);
+  }
+
+  /** Day-string (YYYY-MM-DD) for a timestamp, matching how `date` is derived at sync. */
+  private dayOf(ts: Date | null): string | null {
+    return ts ? toDateOnly(new Date(ts)) : null;
+  }
+
+  /**
+   * The calendar day a piece is attributed to under a given lens:
+   *  - allotment: when it was handed out (the stored `date`)
+   *  - picked: when the writer started it (the writer's work day)
+   *  - verify: when the editor began review (the editor's work day)
+   * A piece allotted one day but picked the next belongs to the writer on the
+   * pick day — counting it on the allotment day understates that day's output.
+   * Falls back to the allotment day when the work timestamp is missing, so a
+   * piece is never dropped from a dated view (the change is strictly: use the
+   * real work day when known, otherwise behave as before).
+   */
+  private anchorDay(
+    p: MsnPiece,
+    anchor: 'allotment' | 'picked' | 'verify',
+  ): string | null {
+    if (anchor === 'picked') return this.dayOf(p.pickedAt) ?? p.date;
+    if (anchor === 'verify') return this.dayOf(p.verifyStart) ?? p.date;
+    return p.date;
+  }
+
+  /** True when `day` falls inside the (optional) requested range. Null day = out. */
+  private inRange(day: string | null, params: MsnFilterParams): boolean {
+    if (!day) return false;
+    if (params.startDate && day < params.startDate) return false;
+    if (params.endDate && day > params.endDate) return false;
+    return true;
   }
 
   /**
@@ -481,7 +552,9 @@ export class MsnProductionService {
   private computeKpis(rows: MsnPiece[]): Omit<KpiOverview, 'deltas'> {
     const totalAllotted = rows.length;
     const totalProduced = rows.filter((r) => this.isSubmitted(r)).length;
-    const published = rows.filter((r) => this.isPublished(r)).length;
+    // "published" is the headline out-the-door count and includes scheduled
+    // work (it's locked to go live); "scheduled" is surfaced as a breakdown.
+    const published = rows.filter((r) => this.countsAsPublished(r)).length;
     const scheduled = rows.filter((r) => this.isScheduled(r)).length;
     const publishRate =
       totalAllotted > 0
@@ -572,7 +645,7 @@ export class MsnProductionService {
       if (r.contentType === 'Article') b.article++;
       else if (r.contentType === 'Slideshow') b.slideshow++;
       else if (r.contentType === 'SS Automation') b.ssAutomation++;
-      if (this.isPublished(r)) b.published++;
+      if (this.countsAsPublished(r)) b.published++;
     }
 
     return [...buckets.values()].sort((a, b) => a.date.localeCompare(b.date));
@@ -669,7 +742,7 @@ export class MsnProductionService {
       const f = getOrCreate(r.feed);
       f.allotted++;
       if (this.isSubmitted(r)) f.produced++;
-      if (this.isPublished(r)) f.published++;
+      if (this.countsAsPublished(r)) f.published++;
       if (r.contentType === 'Article') f.articles++;
       else if (r.contentType === 'Slideshow') f.slideshows++;
       else if (r.contentType === 'SS Automation') f.ssAutomation++;
@@ -695,7 +768,10 @@ export class MsnProductionService {
   }
 
   async getWriterStats(params: MsnFilterParams): Promise<WriterStats[]> {
-    const rows = await this.filter(params);
+    // A writer's pieces are dated by when they picked them up, not when the
+    // piece was allotted — work started a day after allotment belongs to the
+    // pick day. So the date window filters on the pick date here.
+    const rows = await this.filterByAnchor(params, 'picked');
 
     const wMap = new Map<string, WriterStats>();
     const leadTimes = new Map<string, number[]>();
@@ -725,7 +801,7 @@ export class MsnProductionService {
       w.allotted++;
       w.total++;
       if (this.isSubmitted(r)) w.submitted++;
-      if (this.isPublished(r)) w.published++;
+      if (this.countsAsPublished(r)) w.published++;
       if (r.contentType === 'Article') w.articles++;
       else if (r.contentType === 'Slideshow' || r.contentType === 'SS Automation')
         w.slideshows++;
@@ -762,7 +838,9 @@ export class MsnProductionService {
   }
 
   async getEditorStats(params: MsnFilterParams): Promise<EditorStats[]> {
-    const rows = await this.filter(params);
+    // An editor's pieces are dated by when they began review (verify start),
+    // the editor analogue of the writer's pick — not the allotment day.
+    const rows = await this.filterByAnchor(params, 'verify');
 
     const eMap = new Map<
       string,
@@ -878,7 +956,12 @@ export class MsnProductionService {
   }
 
   async getProduction(params: MsnFilterParams): Promise<ProductionResult> {
-    const rows = await this.filter(params);
+    // Each section is dated by its own activity, so fetch the deduped set
+    // without a date clause and window each piece by the relevant work day:
+    // allotment for allotters, pick for writers, review-start for editors.
+    const rows = this.dedupePieces(
+      await this.pieceRepo.find({ where: this.buildWhere(params, false) }),
+    );
 
     const zero = (): ProductionCounts => ({
       pieces: 0,
@@ -949,26 +1032,38 @@ export class MsnProductionService {
       const drafted = this.isSubmitted(r);
       const edited = !pr && isEdited(r);
 
-      add(summary.allotted, r);
-      if (drafted) add(summary.drafted, r);
-      if (pr) add(summary.prPublished, r);
-      else if (edited) add(summary.edited, r);
+      // Window each activity by the day it happened (pick for writing, review
+      // start for editing), so a piece picked the day after allotment counts
+      // toward that day's output rather than the allotment day's.
+      const allotDay = r.date;
+      const pickDay = this.anchorDay(r, 'picked');
+      const verifyDay = this.anchorDay(r, 'verify');
+      const allotIn = this.inRange(allotDay, params);
+      const pickIn = this.inRange(pickDay, params);
+      const verifyIn = this.inRange(verifyDay, params);
+
+      if (allotIn) {
+        add(summary.allotted, r);
+        if (pr) add(summary.prPublished, r);
+      }
+      if (pickIn && drafted) add(summary.drafted, r);
+      if (verifyIn && edited) add(summary.edited, r);
 
       const wh = hoursBetween(r.pickedAt, r.submittedAt);
-      if (wh !== null) writeHours.push(wh);
+      if (pickIn && wh !== null) writeHours.push(wh);
       // PR pieces skip review — keep their edit time out of the median.
       const eh = pr ? null : hoursBetween(r.verifyStart, r.verifyEnd);
-      if (eh !== null) editHours.push(eh);
+      if (verifyIn && eh !== null) editHours.push(eh);
 
-      if (r.allottedBy && r.allottedBy !== 'Unknown') {
+      if (allotIn && r.allottedBy && r.allottedBy !== 'Unknown') {
         if (!allotters.has(r.allottedBy))
           allotters.set(r.allottedBy, { counts: zero(), days: new Set() });
         const a = allotters.get(r.allottedBy)!;
         add(a.counts, r);
-        if (r.date) a.days.add(r.date);
+        if (allotDay) a.days.add(allotDay);
       }
 
-      if (r.writer && r.writer !== 'Unknown') {
+      if (pickIn && r.writer && r.writer !== 'Unknown') {
         if (!writers.has(r.writer))
           writers.set(r.writer, {
             allotted: zero(),
@@ -980,14 +1075,14 @@ export class MsnProductionService {
         add(w.allotted, r);
         if (drafted) {
           add(w.drafted, r);
-          if (r.date) w.days.add(r.date);
+          if (pickDay) w.days.add(pickDay);
         }
         if (wh !== null) w.hours.push(wh);
       }
 
       // PR pieces bypass review, so they aren't an editor's work — skip them
       // from per-editor stats entirely (kept in volume counts above).
-      if (r.editor && r.editor !== 'Unknown' && !pr) {
+      if (verifyIn && r.editor && r.editor !== 'Unknown' && !pr) {
         if (!editors.has(r.editor))
           editors.set(r.editor, {
             counts: zero(),
@@ -998,7 +1093,7 @@ export class MsnProductionService {
         const e = editors.get(r.editor)!;
         if (edited) {
           add(e.counts, r);
-          if (r.date) e.days.add(r.date);
+          if (verifyDay) e.days.add(verifyDay);
         } else {
           e.pending++;
         }
@@ -1149,17 +1244,19 @@ export class MsnProductionService {
   private buildDailyBreakdown(
     rows: MsnPiece[],
     getName: (r: MsnPiece) => string,
+    anchor: 'allotment' | 'picked' | 'verify' = 'allotment',
   ): DailyBreakdownResult {
     const dayMap = new Map<string, DailyBreakdownEntry>();
 
     for (const r of rows) {
       const name = getName(r);
-      if (!r.date || !name || name === 'Unknown') continue;
-      const key = `${name}||${r.date}`;
+      const day = this.anchorDay(r, anchor);
+      if (!day || !name || name === 'Unknown') continue;
+      const key = `${name}||${day}`;
       if (!dayMap.has(key)) {
         dayMap.set(key, {
           name,
-          date: r.date,
+          date: day,
           slides: 0,
           slideshows: 0,
           articles: 0,
@@ -1250,15 +1347,15 @@ export class MsnProductionService {
   async getWriterDailyBreakdown(
     params: MsnFilterParams,
   ): Promise<DailyBreakdownResult> {
-    const rows = await this.filter(params);
-    return this.buildDailyBreakdown(rows, (r) => r.writer);
+    const rows = await this.filterByAnchor(params, 'picked');
+    return this.buildDailyBreakdown(rows, (r) => r.writer, 'picked');
   }
 
   async getEditorDailyBreakdown(
     params: MsnFilterParams,
   ): Promise<DailyBreakdownResult> {
-    const rows = await this.filter(params);
-    return this.buildDailyBreakdown(rows, (r) => r.editor);
+    const rows = await this.filterByAnchor(params, 'verify');
+    return this.buildDailyBreakdown(rows, (r) => r.editor, 'verify');
   }
 
   // ── Pipeline drop-off (replaces cross-sheet leakage) ──
@@ -1917,7 +2014,7 @@ export class MsnProductionService {
       }
       const c = ctMap.get(ct)!;
       c.total++;
-      if (this.isPublished(r)) c.published++;
+      if (this.countsAsPublished(r)) c.published++;
       if (this.isDropped(r)) c.dropped++;
       const cycle = hoursBetween(r.allottedAt, r.publishedAt, 30 * 24);
       if (cycle !== null) c.cycles.push(cycle);
@@ -2069,7 +2166,7 @@ export class MsnProductionService {
       }
       const w = wqMap.get(r.writer)!;
       w.pieces++;
-      if (this.isPublished(r)) w.published++;
+      if (this.countsAsPublished(r)) w.published++;
       if (this.isDropped(r)) w.dropped++;
       const wt = hoursBetween(r.pickedAt, r.submittedAt);
       if (wt !== null) w.writes.push(wt);
@@ -2166,7 +2263,7 @@ export class MsnProductionService {
       if (!divLoad.has(cat))
         divLoad.set(cat, { published: 0, writers: new Set() });
       const d = divLoad.get(cat)!;
-      if (this.isPublished(r)) d.published++;
+      if (this.countsAsPublished(r)) d.published++;
       if (r.writer !== 'Unknown') d.writers.add(r.writer);
     }
     const divisionLoad: DivisionLoadEntry[] = [...divLoad.entries()]
