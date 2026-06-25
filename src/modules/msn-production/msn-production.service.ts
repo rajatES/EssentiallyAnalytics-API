@@ -993,9 +993,11 @@ export class MsnProductionService {
 
     const summary: ProductionSummary = {
       allotted: zero(),
+      picked: zero(),
       drafted: zero(),
       edited: zero(),
       prPublished: zero(),
+      pickRate: 0,
       draftRate: 0,
       editRate: 0,
       medianWriteHours: 0,
@@ -1012,6 +1014,7 @@ export class MsnProductionService {
       string,
       {
         allotted: ProductionCounts;
+        picked: ProductionCounts;
         drafted: ProductionCounts;
         hours: number[];
         days: Set<string>;
@@ -1030,30 +1033,38 @@ export class MsnProductionService {
     for (const r of rows) {
       const pr = this.isPrPublished(r);
       const drafted = this.isSubmitted(r);
+      // A piece is "picked" once the writer starts it. Anything already
+      // submitted/published was necessarily picked, so OR it in — that keeps
+      // picked ≥ drafted and the two writer sub-deltas non-negative even when
+      // the pick timestamp is missing in the source.
+      const picked = !!r.pickedAt || drafted;
       const edited = !pr && isEdited(r);
 
-      // Window each activity by the day it happened (pick for writing, review
-      // start for editing), so a piece picked the day after allotment counts
-      // toward that day's output rather than the allotment day's.
+      // The allotted→picked→drafted→edited funnel is scored as one cohort: every
+      // metric below counts pieces ALLOTTED in the window and asks how far each
+      // got. Keeping a single denominator (allotted) is what keeps the rates
+      // honest — a piece picked/drafted the day after allotment still belongs to
+      // its allotment-day cohort, so nothing is double-anchored or inflated. The
+      // per-editor table further down stays on the review day (the editor's own
+      // work day), which is why verifyDay/verifyIn are still derived.
       const allotDay = r.date;
-      const pickDay = this.anchorDay(r, 'picked');
       const verifyDay = this.anchorDay(r, 'verify');
       const allotIn = this.inRange(allotDay, params);
-      const pickIn = this.inRange(pickDay, params);
       const verifyIn = this.inRange(verifyDay, params);
 
       if (allotIn) {
         add(summary.allotted, r);
+        if (picked) add(summary.picked, r);
+        if (drafted) add(summary.drafted, r);
+        if (edited) add(summary.edited, r);
         if (pr) add(summary.prPublished, r);
       }
-      if (pickIn && drafted) add(summary.drafted, r);
-      if (verifyIn && edited) add(summary.edited, r);
 
       const wh = hoursBetween(r.pickedAt, r.submittedAt);
-      if (pickIn && wh !== null) writeHours.push(wh);
+      if (allotIn && wh !== null) writeHours.push(wh);
       // PR pieces skip review — keep their edit time out of the median.
       const eh = pr ? null : hoursBetween(r.verifyStart, r.verifyEnd);
-      if (verifyIn && eh !== null) editHours.push(eh);
+      if (allotIn && eh !== null) editHours.push(eh);
 
       if (allotIn && r.allottedBy && r.allottedBy !== 'Unknown') {
         if (!allotters.has(r.allottedBy))
@@ -1063,20 +1074,25 @@ export class MsnProductionService {
         if (allotDay) a.days.add(allotDay);
       }
 
-      if (pickIn && r.writer && r.writer !== 'Unknown') {
+      // Writers are scored on the day a piece was ALLOTTED to them, then the
+      // shortfall is split two ways: pieces not yet picked up vs pieces picked
+      // but not yet submitted. A piece picked the day after allotment still
+      // belongs to its allotment-day cohort, so the writer isn't penalised for
+      // work that simply hadn't reached them when the day was tallied.
+      if (allotIn && r.writer && r.writer !== 'Unknown') {
         if (!writers.has(r.writer))
           writers.set(r.writer, {
             allotted: zero(),
+            picked: zero(),
             drafted: zero(),
             hours: [],
             days: new Set(),
           });
         const w = writers.get(r.writer)!;
         add(w.allotted, r);
-        if (drafted) {
-          add(w.drafted, r);
-          if (pickDay) w.days.add(pickDay);
-        }
+        if (picked) add(w.picked, r);
+        if (drafted) add(w.drafted, r);
+        if (allotDay) w.days.add(allotDay);
         if (wh !== null) w.hours.push(wh);
       }
 
@@ -1101,6 +1117,7 @@ export class MsnProductionService {
       }
     }
 
+    summary.pickRate = rate(summary.picked.pieces, summary.allotted.pieces);
     summary.draftRate = rate(summary.drafted.pieces, summary.allotted.pieces);
     // Edit rate is measured against drafts that are actually eligible for
     // review — PR-published drafts skip it by design, so exclude them.
@@ -1128,10 +1145,16 @@ export class MsnProductionService {
           return {
             writer,
             allotted: w.allotted,
+            picked: w.picked,
             drafted: w.drafted,
+            // Two halves of the allotted→drafted shortfall; they sum to
+            // deltaPieces (allotted − drafted).
+            notPickedPieces: w.allotted.pieces - w.picked.pieces,
+            pickedNotDraftedPieces: w.picked.pieces - w.drafted.pieces,
             deltaPieces: w.allotted.pieces - w.drafted.pieces,
             deltaSlides: w.allotted.slides - w.drafted.slides,
             draftRate: rate(w.drafted.pieces, w.allotted.pieces),
+            pickRate: rate(w.picked.pieces, w.allotted.pieces),
             medianWriteHours: median(w.hours),
             perDay: perDay(w.drafted.pieces, w.days),
           };

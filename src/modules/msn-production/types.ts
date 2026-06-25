@@ -475,10 +475,17 @@ export interface AllotterProductionRow extends ProductionCounts {
 export interface WriterProductionRow {
   writer: string;
   allotted: ProductionCounts;
+  picked: ProductionCounts;
   drafted: ProductionCounts;
+  /** Allotted but not yet picked up (allotted − picked). */
+  notPickedPieces: number;
+  /** Picked but not yet submitted (picked − drafted). */
+  pickedNotDraftedPieces: number;
+  /** Total shortfall (allotted − drafted) = notPicked + pickedNotDrafted. */
   deltaPieces: number;
   deltaSlides: number;
   draftRate: number;
+  pickRate: number;
   medianWriteHours: number;
   perDay: number;
 }
@@ -492,10 +499,12 @@ export interface EditorProductionRow extends ProductionCounts {
 
 export interface ProductionSummary {
   allotted: ProductionCounts;
+  picked: ProductionCounts;
   drafted: ProductionCounts;
   edited: ProductionCounts;
   /** Published/scheduled without review (PR) — excluded from edit rate & averages. */
   prPublished: ProductionCounts;
+  pickRate: number;
   draftRate: number;
   editRate: number;
   medianWriteHours: number;
