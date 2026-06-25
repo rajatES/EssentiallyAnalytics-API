@@ -73,6 +73,59 @@ export const fetchProfileBasics = async (
   }
 };
 
+// --- Resilient insights fetch ------------------------------------------------
+// Meta evaluates an /insights `metric=` list atomically: if ANY single metric is
+// invalid (e.g. just-deprecated), the WHOLE request fails with
+// "(#100) The value must be a valid insights metric" and nothing comes back — not
+// even the still-valid metrics. That is what silently blanked the reports page
+// when Meta retired the impressions/reach family (June 2026 cutover).
+//
+// This helper sends the batched call first (the happy path, one request). Only if
+// Meta rejects it with that specific invalid-metric error does it bisect into
+// per-metric requests, returning the union of whatever is still valid and logging
+// each dead name so the NEXT deprecation is visible instead of zeroing the data.
+// Other errors (rate limit, token, permissions) are rethrown unchanged so callers'
+// existing try/catch behaviour is preserved.
+async function fetchInsightsResilient(
+  objectId: string,
+  metrics: string[],
+  params: string,
+  accessToken: string,
+): Promise<any[]> {
+  const buildUrl = (metricCsv: string) =>
+    `${BASE_URL}/${objectId}/insights?` +
+    [`metric=${metricCsv}`, params, `access_token=${accessToken}`]
+      .filter(Boolean)
+      .join('&');
+
+  try {
+    const res = await axios.get(buildUrl(metrics.join(',')));
+    return res.data?.data || [];
+  } catch (err: any) {
+    const error = err.response?.data?.error;
+    const isInvalidMetric =
+      error?.code === 100 &&
+      /valid insights metric/i.test(error?.message || '');
+
+    // Only the invalid-metric case is salvageable by dropping the bad name(s).
+    if (!isInvalidMetric) throw err;
+
+    const merged: any[] = [];
+    for (const metric of metrics) {
+      try {
+        const res = await axios.get(buildUrl(metric));
+        if (res.data?.data) merged.push(...res.data.data);
+      } catch (singleErr: any) {
+        console.warn(
+          `[Meta API Warning] Insights metric "${metric}" rejected for ${objectId} (likely deprecated):`,
+          singleErr.response?.data?.error?.message || singleErr.message,
+        );
+      }
+    }
+    return merged;
+  }
+}
+
 export const fetchDailySnapshot = async (
   profileId: string,
   accessToken: string,
@@ -84,12 +137,26 @@ export const fetchDailySnapshot = async (
 
   if (platform === 'facebook') {
     try {
-      const fbMetrics =
-        'page_impressions_unique,page_post_engagements,page_daily_follows_unique,page_daily_unfollows_unique,page_video_views,page_total_actions,page_views_total';
-      const url = `${BASE_URL}/${profileId}/insights?metric=${fbMetrics}&period=day&since=${sinceUnix}&until=${untilUnix}&access_token=${accessToken}`;
-      const response = await axios.get(url);
-      if (response.data?.data)
-        aggregatedData = [...aggregatedData, ...response.data.data];
+      // Meta retired the impressions/reach family (June 2026 cutover). The new
+      // model uses "media view" metrics: page_media_view = total content views
+      // (≈ impressions), page_total_media_view_unique = unique viewers (≈ reach).
+      const fbMetrics = [
+        'page_media_view',
+        'page_total_media_view_unique',
+        'page_post_engagements',
+        'page_daily_follows_unique',
+        'page_daily_unfollows_unique',
+        'page_video_views',
+        'page_total_actions',
+        'page_views_total',
+      ];
+      const data = await fetchInsightsResilient(
+        profileId,
+        fbMetrics,
+        `period=day&since=${sinceUnix}&until=${untilUnix}`,
+        accessToken,
+      );
+      aggregatedData = [...aggregatedData, ...data];
     } catch (err: any) {
       console.warn(
         `[Meta API Warning] Main FB metrics failed for ${profileId}:`,
@@ -98,10 +165,16 @@ export const fetchDailySnapshot = async (
     }
 
     try {
-      const msgUrl = `${BASE_URL}/${profileId}/insights?metric=page_messages_new_conversations_unique,page_messages_total_messaging_connections&period=day&since=${sinceUnix}&until=${untilUnix}&access_token=${accessToken}`;
-      const msgRes = await axios.get(msgUrl);
-      if (msgRes.data?.data)
-        aggregatedData = [...aggregatedData, ...msgRes.data.data];
+      const msgData = await fetchInsightsResilient(
+        profileId,
+        [
+          'page_messages_new_conversations_unique',
+          'page_messages_total_messaging_connections',
+        ],
+        `period=day&since=${sinceUnix}&until=${untilUnix}`,
+        accessToken,
+      );
+      aggregatedData = [...aggregatedData, ...msgData];
     } catch (msgError: any) {}
   } else if (platform === 'instagram') {
     const totalValueMetrics = [
@@ -111,12 +184,14 @@ export const fetchDailySnapshot = async (
       'total_interactions',
       'follows_and_unfollows',
     ];
-    const url1 = `${BASE_URL}/${profileId}/insights?metric=${totalValueMetrics.join(',')}&period=day&metric_type=total_value&since=${sinceUnix}&until=${untilUnix}&access_token=${accessToken}`;
-
     try {
-      const res1 = await axios.get(url1);
-      if (res1.data.data)
-        aggregatedData = [...aggregatedData, ...res1.data.data];
+      const data = await fetchInsightsResilient(
+        profileId,
+        totalValueMetrics,
+        `period=day&metric_type=total_value&since=${sinceUnix}&until=${untilUnix}`,
+        accessToken,
+      );
+      aggregatedData = [...aggregatedData, ...data];
     } catch (err: any) {
       console.warn(
         `[Meta API Warning] IG total_value metrics failed for ${profileId}:`,
@@ -130,12 +205,14 @@ export const fetchDailySnapshot = async (
       standardMetrics.push('follower_count');
     }
 
-    const url2 = `${BASE_URL}/${profileId}/insights?metric=${standardMetrics.join(',')}&period=day&since=${sinceUnix}&until=${untilUnix}&access_token=${accessToken}`;
-
     try {
-      const res2 = await axios.get(url2);
-      if (res2.data.data)
-        aggregatedData = [...aggregatedData, ...res2.data.data];
+      const data = await fetchInsightsResilient(
+        profileId,
+        standardMetrics,
+        `period=day&since=${sinceUnix}&until=${untilUnix}`,
+        accessToken,
+      );
+      aggregatedData = [...aggregatedData, ...data];
     } catch (err: any) {
       console.warn(
         `[Meta API Warning] IG standard metrics failed for ${profileId}:`,
@@ -233,18 +310,19 @@ export const fetchPostDeepInsights = async (
 ) => {
   try {
     if (platform === 'facebook') {
-      const metrics =
-        postType === 'video'
-          ? 'post_impressions_unique,post_video_views,post_clicks'
-          : 'post_impressions_unique,post_clicks';
-      const url = `${BASE_URL}/${postId}/insights?metric=${metrics}&access_token=${accessToken}`;
-      const response = await axios.get(url);
-      return response.data.data || [];
+      // post_impressions_unique (reach) was retired June 2026. Replace with the
+      // "media view" metrics: post_total_media_view_unique = unique viewers (reach),
+      // post_media_view = total content views (now populated for all post types,
+      // not just video). post_clicks is still valid.
+      const metrics = [
+        'post_total_media_view_unique',
+        'post_media_view',
+        'post_clicks',
+      ];
+      return await fetchInsightsResilient(postId, metrics, '', accessToken);
     } else if (platform === 'instagram') {
-      const metrics = 'reach,views,saved,shares,total_interactions';
-      const url = `${BASE_URL}/${postId}/insights?metric=${metrics}&access_token=${accessToken}`;
-      const response = await axios.get(url);
-      return response.data.data || [];
+      const metrics = ['reach', 'views', 'saved', 'shares', 'total_interactions'];
+      return await fetchInsightsResilient(postId, metrics, '', accessToken);
     }
     return [];
   } catch (error: any) {

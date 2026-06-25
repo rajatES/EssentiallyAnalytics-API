@@ -157,10 +157,10 @@ export class SyncProcessor {
             ? metrics['page_daily_unfollows_unique'] || 0
             : igUnfollows;
           const totalReach = isFb
-            ? metrics['page_impressions_unique'] || 0
+            ? metrics['page_total_media_view_unique'] || 0
             : metrics['reach'] || 0;
           const totalImpressions = isFb
-            ? metrics['page_impressions_unique'] || 0
+            ? metrics['page_media_view'] || 0
             : metrics['views'] || metrics['reach'] || 0;
           const videoViews = isFb ? metrics['page_video_views'] || 0 : 0;
           const totalEngagement = isFb
@@ -269,13 +269,21 @@ export class SyncProcessor {
             profile.platform as any,
             rawType,
           );
-          const getInsight = (arr: any[], name: string) =>
-            arr?.find((i: any) => i.name === name)?.values[0]?.value || 0;
+          // Some new "media view" metrics return TWO entries for one name — a
+          // `lifetime` total and a `day` series. We want the lifetime total
+          // (matches the old post_impressions_unique semantics), so prefer it
+          // explicitly rather than relying on Meta's response ordering.
+          const getInsight = (arr: any[], name: string) => {
+            const entries = (arr || []).filter((i: any) => i.name === name);
+            const chosen =
+              entries.find((e: any) => e.period === 'lifetime') || entries[0];
+            return chosen?.values?.[0]?.value || 0;
+          };
 
           if (profile.platform === 'facebook') {
             clicks = getInsight(deep, 'post_clicks');
-            reach = getInsight(deep, 'post_impressions_unique');
-            views = getInsight(deep, 'post_video_views');
+            reach = getInsight(deep, 'post_total_media_view_unique');
+            views = getInsight(deep, 'post_media_view');
             shares = post.shares?.count || post.shares_count || 0;
           } else {
             reach = getInsight(deep, 'reach');
@@ -585,10 +593,10 @@ export class SyncProcessor {
             ? metrics['page_daily_unfollows_unique'] || 0
             : igUnfollows;
           const totalReach = isFb
-            ? metrics['page_impressions_unique'] || 0
+            ? metrics['page_total_media_view_unique'] || 0
             : metrics['reach'] || 0;
           const totalImpressions = isFb
-            ? metrics['page_impressions_unique'] || 0
+            ? metrics['page_media_view'] || 0
             : metrics['views'] || metrics['reach'] || 0;
           const videoViews = isFb ? metrics['page_video_views'] || 0 : 0;
           const totalEngagement = isFb
@@ -696,13 +704,21 @@ export class SyncProcessor {
             profile.platform as any,
             rawType,
           );
-          const getInsight = (arr: any[], name: string) =>
-            arr?.find((i: any) => i.name === name)?.values[0]?.value || 0;
+          // Some new "media view" metrics return TWO entries for one name — a
+          // `lifetime` total and a `day` series. We want the lifetime total
+          // (matches the old post_impressions_unique semantics), so prefer it
+          // explicitly rather than relying on Meta's response ordering.
+          const getInsight = (arr: any[], name: string) => {
+            const entries = (arr || []).filter((i: any) => i.name === name);
+            const chosen =
+              entries.find((e: any) => e.period === 'lifetime') || entries[0];
+            return chosen?.values?.[0]?.value || 0;
+          };
 
           if (profile.platform === 'facebook') {
             clicks = getInsight(deep, 'post_clicks');
-            reach = getInsight(deep, 'post_impressions_unique');
-            views = getInsight(deep, 'post_video_views');
+            reach = getInsight(deep, 'post_total_media_view_unique');
+            views = getInsight(deep, 'post_media_view');
             shares = post.shares?.count || post.shares_count || 0;
           } else {
             reach = getInsight(deep, 'reach');
