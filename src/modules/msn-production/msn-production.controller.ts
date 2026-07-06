@@ -1,10 +1,24 @@
-import { Controller, Get, Post, Query } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  Headers,
+  Post,
+  Put,
+  Query,
+  UnauthorizedException,
+} from '@nestjs/common';
 import { MsnProductionService } from './msn-production.service';
+import { ReportsService } from './reports.service';
+import { Public } from '../../common/decorators/public.decorator';
 import { MsnFilterParams } from './types';
 
 @Controller('v1/msn-production')
 export class MsnProductionController {
-  constructor(private readonly service: MsnProductionService) {}
+  constructor(
+    private readonly service: MsnProductionService,
+    private readonly reports: ReportsService,
+  ) {}
 
   private parseFilters(query: Record<string, any>): MsnFilterParams {
     const split = (v: any): string[] | undefined =>
@@ -155,5 +169,63 @@ export class MsnProductionController {
   @Get('duplicates')
   getDuplicates(@Query() query: Record<string, any>) {
     return this.service.getDuplicates(this.parseFilters(query));
+  }
+
+  // ── Syndication reports (EOD / EOW / MTD) ──
+
+  /**
+   * Scraper ingest endpoint. Public (the scraper has no user cookie) but
+   * protected by a shared secret sent as the X-Ingest-Key header.
+   */
+  @Public()
+  @Post('reports/ingest')
+  ingestReport(
+    @Headers('x-ingest-key') ingestKey: string | undefined,
+    @Body() body: any,
+  ) {
+    const expected = process.env.MSN_INGEST_KEY;
+    if (!expected) {
+      // Refuse rather than silently accept everything when unconfigured.
+      throw new UnauthorizedException('Ingest is not configured on the server');
+    }
+    if (ingestKey !== expected) {
+      throw new UnauthorizedException('Invalid ingest key');
+    }
+    return this.reports.ingest(body);
+  }
+
+  @Get('reports/config')
+  getReportsConfig() {
+    return this.reports.getConfig();
+  }
+
+  @Get('reports/targets')
+  getReportTargets() {
+    return this.reports.getTargets();
+  }
+
+  @Put('reports/targets')
+  updateReportTargets(@Body() body: any) {
+    return this.reports.updateTargets(body);
+  }
+
+  @Get('reports/periods')
+  getReportPeriods() {
+    return this.reports.getPeriods();
+  }
+
+  @Get('reports/eod')
+  getEodReport(@Query('date') date?: string) {
+    return this.reports.getEod(date || undefined);
+  }
+
+  @Get('reports/eow')
+  getEowReport(@Query('weekStart') weekStart?: string) {
+    return this.reports.getEow(weekStart || undefined);
+  }
+
+  @Get('reports/mtd')
+  getMtdReport(@Query('month') month?: string) {
+    return this.reports.getMtd(month || undefined);
   }
 }

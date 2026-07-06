@@ -6,9 +6,10 @@ services:
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: password
-      POSTGRES_DB: social_studio
-    ports:
-      - '5432:5432'
+      POSTGRES_DB: social_studio_db
+    # No host port published — the backend reaches Postgres over the internal
+    # Docker network (postgres-db:5432), avoiding host port conflicts.
+    # To inspect from host: docker compose exec postgres-db psql -U postgres -d social_studio_db
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -21,8 +22,8 @@ services:
     image: redis:7-alpine
     container_name: social_redis
     restart: unless-stopped
-    ports:
-      - '6379:6379'
+    # No host port published — the backend reaches Redis over the internal
+    # Docker network (redis-cache:6379), so we avoid host port conflicts.
     volumes:
       - redis_data:/data
 
@@ -45,9 +46,15 @@ services:
       - DB_USERNAME=postgres
       - DB_PASSWORD=password
       - DB_NAME=social_studio_db
+      - DB_SYNC=true
       - REDIS_HOST=redis-cache
       - BIGQUERY_PROJECT_ID=${BIGQUERY_PROJECT_ID}
       - GOOGLE_APPLICATION_CREDENTIALS=/app/gcp-key.json
+      - MSN_SHEET_ID=1O6lZT1DntkqWtOWUtmMA7BCSmm9FjwSkA-qk5afg-vc
+      - MSN_TAB_NAME=Sheet1
+      - MSN_MODERATION_SHEET_ID=1QrFg0eg6eNYMtLMrRHHrM8bJyEq_I7F02Lbk3iCpLHM
+      - MSN_MODERATION_TAB_NAME=Sheet1
+      - MSN_INGEST_KEY=${MSN_INGEST_KEY:-dev-msn-ingest-key-change-me}
       - SETUP_SECRET=${SETUP_SECRET}
       - META_APP_ID=${META_APP_ID}
       - META_APP_SECRET=${META_APP_SECRET}
