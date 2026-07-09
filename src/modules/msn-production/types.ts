@@ -338,6 +338,32 @@ export interface AvailabilityResult {
   unmatchedActive: PersonAvailability[];
 }
 
+// ── Work gaps (days a person had no activity in the period) ──
+
+export interface WorkGapPerson {
+  name: string;
+  role: 'allotter' | 'writer' | 'editor';
+  /** Weekly week-off from the roster (empty when unknown). */
+  weekoff: string;
+  /** Working days in the window (from first activity → period end, minus week-offs). */
+  periodWorkingDays: number;
+  daysWorked: number;
+  daysNotWorked: number;
+  /** The specific working days (YYYY-MM-DD) with no logged activity. */
+  notWorkedDates: string[];
+  firstActive: string | null;
+  lastActive: string | null;
+}
+
+export interface WorkGapsResult {
+  asOf: string;
+  start: string;
+  end: string;
+  allotters: WorkGapPerson[];
+  writers: WorkGapPerson[];
+  editors: WorkGapPerson[];
+}
+
 // ── Category (division) split ──
 
 export interface CategorySplitEntry {
@@ -405,12 +431,36 @@ export interface DropByGroup {
   dropRate: number;
 }
 
+/** A single dead/dying piece with the people accountable for it. */
+export interface DeadTitleEntry {
+  title: string;
+  writer: string;
+  allottedBy: string;
+  editor: string;
+  feed: string;
+  category: string;
+  /** Where it died: Never picked / While writing / Awaiting review / In review / After review. */
+  stage: string;
+  /** How it died: 'killed' (trashed/scrapped) or 'abandoned' (stalled WIP). */
+  type: 'killed' | 'abandoned';
+  status: string;
+  date: string | null;
+  /** Days stuck (abandoned) or age since allotment. */
+  ageDays: number | null;
+}
+
 export interface DropAnalysis {
+  /** Dead = killed (trashed/scrapped) + abandoned (stalled WIP). Excludes rework. */
   totalDropped: number;
   dropRate: number;
+  killed: number;
+  abandoned: number;
+  /** Sent-back pieces (rework, not a death) — surfaced for context only. */
+  sentBack: number;
   byStage: DropStageEntry[];
   byCategory: DropByGroup[];
   byFeed: DropByGroup[];
+  titles: DeadTitleEntry[];
 }
 
 export interface WriterQuadrantEntry {
@@ -431,10 +481,12 @@ export interface PairMatrixEntry {
 
 export interface MomentumEntry {
   name: string;
-  weekly: number[]; // 6 rolling 7-day windows, oldest → newest
+  weekly: number[]; // rolling 7-day windows (data-backed only), oldest → newest
   total: number;
-  trendPct: number; // latest window vs avg of prior windows
+  trendPct: number; // latest window vs avg of prior windows, clamped to ±100
   direction: 'up' | 'down' | 'flat';
+  /** No usable prior baseline (started publishing too recently) — % is not meaningful. */
+  isNew: boolean;
 }
 
 export interface DivisionLoadEntry {

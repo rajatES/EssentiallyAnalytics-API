@@ -151,6 +151,11 @@ export class MsnProductionController {
     return this.service.getPeopleAvailability();
   }
 
+  @Get('work-gaps')
+  getWorkGaps(@Query() query: Record<string, any>) {
+    return this.service.getWorkGaps(this.parseFilters(query));
+  }
+
   @Get('category-split')
   getCategorySplit(@Query() query: Record<string, any>) {
     return this.service.getCategorySplit(this.parseFilters(query));

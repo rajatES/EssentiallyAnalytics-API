@@ -47,6 +47,8 @@ import {
   AvailabilityResult,
   PersonAvailability,
   DivisionBandwidth,
+  WorkGapsResult,
+  WorkGapPerson,
   CategorySplitEntry,
   InsightsResult,
   ContentTypeInsight,
@@ -55,6 +57,7 @@ import {
   DropAnalysis,
   DropStageEntry,
   DropByGroup,
+  DeadTitleEntry,
   WriterQuadrantEntry,
   PairMatrixEntry,
   MomentumEntry,
@@ -76,6 +79,12 @@ import {
 const PUBLISHED_STATUSES = ['Published', 'Published (PR)'];
 const SCHEDULED_STATUSES = ['Scheduled', 'Scheduled (PR)'];
 const DROPPED_STATUSES = ['Sent Back', 'Trashed', 'Scrapped'];
+/** Explicitly killed — as opposed to "Sent Back" (rework that usually returns). */
+const KILLED_STATUSES = ['Trashed', 'Scrapped'];
+/** An allotment never picked up after this many days no longer counts as active workload. */
+const STALE_PICK_DAYS = 7;
+/** WIP that hasn't advanced in this many days is treated as abandoned (dead). */
+const ABANDON_DAYS = 14;
 
 /** Hours between two timestamps, or null if out of a sane [0, capHours] range. */
 function hoursBetween(
@@ -1440,7 +1449,7 @@ export class MsnProductionService {
       name: string,
     ) => {
       if (!map.has(name))
-        map.set(name, { pick: [], writing: [], editing: [], publish: [], total: [] });
+        map.set(name, { n: 0, pick: [], writing: [], editing: [], publish: [], total: [] });
       return map.get(name);
     };
 
@@ -1463,6 +1472,7 @@ export class MsnProductionService {
 
       if (r.feed !== 'Unknown') {
         const fb = bucket(byFeed, r.feed);
+        fb.n++;
         if (p !== null) fb.pick.push(p);
         if (w !== null) fb.writing.push(w);
         if (e !== null) fb.editing.push(e);
@@ -1471,6 +1481,7 @@ export class MsnProductionService {
       }
       if (r.writer !== 'Unknown') {
         const wb = bucket(byWriter, r.writer);
+        wb.n++;
         if (p !== null) wb.pick.push(p);
         if (w !== null) wb.writing.push(w);
         if (e !== null) wb.editing.push(e);
@@ -1505,7 +1516,9 @@ export class MsnProductionService {
       editingHours: median([...b.editing].sort((a: number, c: number) => a - c)),
       publishHours: median([...b.publish].sort((a: number, c: number) => a - c)),
       totalHours: median([...b.total].sort((a: number, c: number) => a - c)),
-      count: b.total.length,
+      // Real number of pieces for this feed/writer — not just those that
+      // completed the full allot→publish cycle (which undercounted volume).
+      count: b.n,
     });
 
     const byFeedArr = [...byFeed.entries()]
@@ -1855,6 +1868,19 @@ export class MsnProductionService {
       const stage = this.wipStageOf(p);
       if (!stage) continue;
 
+      // A piece allotted but never picked up after STALE_PICK_DAYS is an
+      // unclaimed backlog item, not something the writer is actively working.
+      // Counting it inflated the board with long-dead allotments (a large share
+      // of "active" load was >1 week old), so drop it from current workload.
+      if (
+        stage.key === 'awaiting-pick' &&
+        stage.enteredAt &&
+        now.getTime() - new Date(stage.enteredAt).getTime() >
+          STALE_PICK_DAYS * 86400000
+      ) {
+        continue;
+      }
+
       // Writer owns the piece until it is submitted; editor owns it from
       // submission until review completes.
       const writerActive =
@@ -1952,6 +1978,155 @@ export class MsnProductionService {
       people: result,
       divisions: [...divMap.values()].sort((a, b) => b.total - a.total),
       unmatchedActive,
+    };
+  }
+
+  // ── Work gaps: which days each person had no activity in the period ──
+
+  /**
+   * For every allotter, writer and editor active in the window, the working
+   * days they logged no activity on. "Worked" means a real work timestamp
+   * exists for that role (allotting / picking / reviewing) — a piece merely
+   * allotted to a writer who never picked it is NOT a worked day for them.
+   *
+   * A person is only counted from their first activity onward (so a mid-period
+   * joiner isn't charged for days before they started), through the period end
+   * (so trailing idle days show up), and their weekly week-off is excluded.
+   */
+  async getWorkGaps(params: MsnFilterParams): Promise<WorkGapsResult> {
+    const rows = this.dedupePieces(
+      await this.pieceRepo.find({ where: this.buildWhere(params, false) }),
+    );
+    const now = new Date();
+    const end = params.endDate ?? this.istDateStr(now);
+
+    // Role → person → set of days they actually worked (real work timestamps).
+    const roleDays = {
+      allotter: new Map<string, Set<string>>(),
+      writer: new Map<string, Set<string>>(),
+      editor: new Map<string, Set<string>>(),
+    };
+    const add = (
+      map: Map<string, Set<string>>,
+      name: string,
+      day: string | null,
+    ) => {
+      if (!name || name === 'Unknown' || !day) return;
+      if (!map.has(name)) map.set(name, new Set());
+      map.get(name)!.add(day);
+    };
+
+    let globalMin = '';
+    const seeMin = (d: string | null) => {
+      if (d && (!globalMin || d < globalMin)) globalMin = d;
+    };
+
+    for (const r of rows) {
+      const allotDay = this.dayOf(r.allottedAt) ?? r.date;
+      const writeDay = this.dayOf(r.pickedAt) ?? this.dayOf(r.submittedAt);
+      const editDay = this.dayOf(r.verifyStart) ?? this.dayOf(r.verifyEnd);
+      add(roleDays.allotter, r.allottedBy, allotDay);
+      add(roleDays.writer, r.writer, writeDay);
+      add(roleDays.editor, r.editor, editDay);
+      seeMin(allotDay);
+      seeMin(writeDay);
+      seeMin(editDay);
+    }
+
+    const effStart = params.startDate ?? globalMin ?? end;
+
+    // Roster week-off lookup, resolving activity names (often full) against
+    // roster names (often first-name only), mirroring availability's resolver.
+    const rosterRows = await this.rosterRepo.find();
+    const weekoffByKey = new Map<string, string>();
+    const byFirst = new Map<string, string[]>();
+    for (const r of rosterRows) {
+      const key = r.name?.trim().toLowerCase();
+      if (!key) continue;
+      if (!weekoffByKey.has(key)) weekoffByKey.set(key, r.weekoff || '');
+      else if (r.weekoff && !weekoffByKey.get(key))
+        weekoffByKey.set(key, r.weekoff);
+      const first = key.split(/\s+/)[0];
+      if (!byFirst.has(first)) byFirst.set(first, []);
+      if (!byFirst.get(first)!.includes(key)) byFirst.get(first)!.push(key);
+    }
+    const resolveWeekoff = (raw: string): string => {
+      const norm = raw.trim().toLowerCase();
+      if (!norm || norm === 'unknown') return '';
+      if (weekoffByKey.has(norm)) return weekoffByKey.get(norm)!;
+      const cands = byFirst.get(norm.split(/\s+/)[0]) ?? [];
+      return cands.length === 1 ? weekoffByKey.get(cands[0]) ?? '' : '';
+    };
+
+    const WEEKDAYS_FULL = [
+      'Sunday',
+      'Monday',
+      'Tuesday',
+      'Wednesday',
+      'Thursday',
+      'Friday',
+      'Saturday',
+    ];
+    const weekdayFull = (day: string) =>
+      WEEKDAYS_FULL[new Date(`${day}T00:00:00Z`).getUTCDay()];
+    const enumerate = (from: string, to: string): string[] => {
+      const out: string[] = [];
+      if (from > to) return out;
+      let d = new Date(`${from}T00:00:00Z`);
+      const endD = new Date(`${to}T00:00:00Z`);
+      let guard = 0;
+      while (d <= endD && guard < 800) {
+        out.push(d.toISOString().slice(0, 10));
+        d = new Date(d.getTime() + 86400000);
+        guard++;
+      }
+      return out;
+    };
+
+    const buildRole = (
+      map: Map<string, Set<string>>,
+      role: 'allotter' | 'writer' | 'editor',
+    ): WorkGapPerson[] => {
+      const out: WorkGapPerson[] = [];
+      for (const [name, days] of map) {
+        const sorted = [...days].sort();
+        const firstEver = sorted[0];
+        const countStart = effStart > firstEver ? effStart : firstEver;
+        if (countStart > end) continue;
+        const worked = sorted.filter((d) => d >= countStart && d <= end);
+        if (worked.length === 0) continue;
+
+        const weekoff = resolveWeekoff(name);
+        const wo = weekoff.trim().toLowerCase();
+        const isOff = (day: string) =>
+          wo.length >= 3 && weekdayFull(day).toLowerCase().startsWith(wo.slice(0, 3));
+
+        const expected = enumerate(countStart, end).filter((d) => !isOff(d));
+        const workedSet = new Set(worked);
+        const notWorked = expected.filter((d) => !workedSet.has(d));
+
+        out.push({
+          name,
+          role,
+          weekoff,
+          periodWorkingDays: expected.length,
+          daysWorked: worked.length,
+          daysNotWorked: notWorked.length,
+          notWorkedDates: notWorked.slice(0, 120),
+          firstActive: worked[0],
+          lastActive: worked[worked.length - 1],
+        });
+      }
+      return out.sort((a, b) => b.daysNotWorked - a.daysNotWorked);
+    };
+
+    return {
+      asOf: now.toISOString(),
+      start: effStart,
+      end,
+      allotters: buildRole(roleDays.allotter, 'allotter'),
+      writers: buildRole(roleDays.writer, 'writer'),
+      editors: buildRole(roleDays.editor, 'editor'),
     };
   }
 
@@ -2106,7 +2281,18 @@ export class MsnProductionService {
       },
     );
 
-    // ── 4. Drop autopsy: where killed pieces died ──
+    // ── 4. Drop autopsy: where pieces actually die ──
+    // A piece is "dead" if it was explicitly killed (Trashed/Scrapped) OR
+    // abandoned — left in a pre-completion WIP stage with no progress for
+    // ABANDON_DAYS. "Sent Back" is rework (usually resubmitted and published),
+    // so it is counted separately, not as a death. Abandonment is the dominant
+    // failure mode and was previously invisible because those pieces never get
+    // a dropped status — they just go stale.
+    const DAY = 86400000;
+    const isKilled = (r: MsnPiece): boolean =>
+      KILLED_STATUSES.includes(r.publishingStatus) ||
+      KILLED_STATUSES.includes(r.editorialStatus);
+    // Where a killed piece got to before it was killed.
     const stageOfDeath = (r: MsnPiece): string => {
       if (r.verifyEnd || r.editorialStatus === 'Verified') return 'After review';
       if (r.verifyStart) return 'In review';
@@ -2114,10 +2300,23 @@ export class MsnProductionService {
       if (r.pickedAt) return 'While writing';
       return 'Never picked';
     };
+    // Where an abandoned WIP piece is stuck. "ready" (verified, awaiting publish)
+    // is excluded — that work is done, not dead.
+    const ABANDON_STAGE_LABEL: Record<string, string> = {
+      'awaiting-pick': 'Never picked',
+      writing: 'While writing',
+      'awaiting-review': 'Awaiting review',
+      review: 'In review',
+    };
+
     const dropStages = new Map<string, number>();
     const dropByCat = new Map<string, { dropped: number; total: number }>();
     const dropByFeed = new Map<string, { dropped: number; total: number }>();
+    const deadTitles: DeadTitleEntry[] = [];
     let totalDropped = 0;
+    let killedCount = 0;
+    let abandonedCount = 0;
+    let sentBackCount = 0;
     const bumpGroup = (
       map: Map<string, { dropped: number; total: number }>,
       name: string,
@@ -2128,15 +2327,68 @@ export class MsnProductionService {
       g.total++;
       if (dropped) g.dropped++;
     };
+
     for (const r of rows) {
-      const dropped = this.isDropped(r);
-      if (r.category !== 'Unknown') bumpGroup(dropByCat, r.category, dropped);
-      if (r.feed !== 'Unknown') bumpGroup(dropByFeed, r.feed, dropped);
-      if (!dropped) continue;
+      let deadType: 'killed' | 'abandoned' | null = null;
+      let stage = '';
+      let ageDays: number | null = null;
+
+      if (isKilled(r)) {
+        deadType = 'killed';
+        stage = stageOfDeath(r);
+        ageDays = r.allottedAt
+          ? Math.round((now.getTime() - new Date(r.allottedAt).getTime()) / DAY)
+          : null;
+      } else if (this.countsAsPublished(r)) {
+        // Alive — neither dead nor rework, even if an old "Sent Back" status
+        // lingers on the row.
+      } else if (
+        r.publishingStatus === 'Sent Back' ||
+        r.editorialStatus === 'Sent Back'
+      ) {
+        sentBackCount++;
+      } else {
+        const w = this.wipStageOf(r);
+        if (w && ABANDON_STAGE_LABEL[w.key] && w.enteredAt) {
+          const age =
+            (now.getTime() - new Date(w.enteredAt).getTime()) / DAY;
+          if (age > ABANDON_DAYS) {
+            deadType = 'abandoned';
+            stage = ABANDON_STAGE_LABEL[w.key];
+            ageDays = Math.round(age);
+          }
+        }
+      }
+
+      const dead = deadType !== null;
+      if (r.category !== 'Unknown') bumpGroup(dropByCat, r.category, dead);
+      if (r.feed !== 'Unknown') bumpGroup(dropByFeed, r.feed, dead);
+      if (!dead) continue;
+
       totalDropped++;
-      const stage = stageOfDeath(r);
+      if (deadType === 'killed') killedCount++;
+      else abandonedCount++;
       dropStages.set(stage, (dropStages.get(stage) || 0) + 1);
+      deadTitles.push({
+        title: r.title || 'Untitled',
+        writer: r.writer,
+        allottedBy: r.allottedBy,
+        editor: r.editor,
+        feed: r.feed,
+        category: r.category,
+        stage,
+        type: deadType!,
+        status:
+          r.publishingStatus !== 'Unknown'
+            ? r.publishingStatus
+            : r.editorialStatus !== 'Unknown'
+              ? r.editorialStatus
+              : 'In progress',
+        date: r.date,
+        ageDays,
+      });
     }
+
     const stageOrder = [
       'Never picked',
       'While writing',
@@ -2161,15 +2413,27 @@ export class MsnProductionService {
         .filter((g) => g.dropped > 0)
         .sort((a, b) => b.dropped - a.dropped)
         .slice(0, 8);
+
+    // Killed first, then longest-stuck; the table shows who owns each dead piece.
+    deadTitles.sort(
+      (a, b) =>
+        (a.type === b.type ? 0 : a.type === 'killed' ? -1 : 1) ||
+        (b.ageDays ?? 0) - (a.ageDays ?? 0),
+    );
+
     const dropAnalysis: DropAnalysis = {
       totalDropped,
       dropRate:
         rows.length > 0
           ? Math.round((totalDropped / rows.length) * 1000) / 10
           : 0,
+      killed: killedCount,
+      abandoned: abandonedCount,
+      sentBack: sentBackCount,
       byStage,
       byCategory: toGroups(dropByCat),
       byFeed: toGroups(dropByFeed),
+      titles: deadTitles.slice(0, 300),
     };
 
     // ── 5. Writer quadrant: volume × write speed × publish rate ──
@@ -2246,33 +2510,68 @@ export class MsnProductionService {
       .sort((a, b) => b.pieces - a.pieces)
       .slice(0, 30);
 
-    // ── 7. Momentum: 6 rolling 7-day publish windows per writer ──
-    // Deliberately ignores the date filter (it's a trailing-42-day view);
-    // category filter still applies.
+    // ── 7. Momentum: rolling 7-day publish windows per writer ──
+    // Deliberately ignores the date filter (it's a trailing view); category
+    // filter still applies. Publish timestamps only exist from a certain point
+    // in the source, so any window that begins before the first real publish is
+    // structurally empty — including it would deflate the baseline and blow the
+    // percentage up to thousands of %. We drop those leading empty windows and
+    // only score writers who have a genuine prior baseline; the change is then
+    // clamped to a sane ±100% so one explosive ratio can't dominate the board.
     const momentumRows = await this.filter({ categories: params.categories });
     const WINDOW = 7 * 86400000;
-    const windowStart = (i: number) => now.getTime() - (6 - i) * WINDOW;
+    const WINDOWS = 6;
+    // Window i spans [now-(WINDOWS-i)·7d, now-(WINDOWS-1-i)·7d); window WINDOWS-1
+    // is the trailing 7 days ("this week"), ending exactly at now.
+    const windowStart = (i: number) => now.getTime() - (WINDOWS - i) * WINDOW;
+
+    let firstPublishedMs = Infinity;
     const moMap = new Map<string, number[]>();
     for (const r of momentumRows) {
       if (!r.publishedAt || r.writer === 'Unknown') continue;
       const t = new Date(r.publishedAt).getTime();
       if (t < windowStart(0) || t > now.getTime()) continue;
-      const idx = Math.min(5, Math.floor((t - windowStart(0)) / WINDOW));
-      if (!moMap.has(r.writer)) moMap.set(r.writer, [0, 0, 0, 0, 0, 0]);
+      if (t < firstPublishedMs) firstPublishedMs = t;
+      const idx = Math.min(WINDOWS - 1, Math.floor((t - windowStart(0)) / WINDOW));
+      if (!moMap.has(r.writer))
+        moMap.set(r.writer, new Array(WINDOWS).fill(0) as number[]);
       moMap.get(r.writer)![idx]++;
     }
+
+    // Earliest window whose span actually overlaps real publish data. Windows
+    // before it are dropped from every writer's series.
+    let firstIdx = 0;
+    for (let i = 0; i < WINDOWS; i++) {
+      if (windowStart(i) + WINDOW > firstPublishedMs) {
+        firstIdx = i;
+        break;
+      }
+    }
+    const clamp = (n: number) => Math.max(-100, Math.min(100, n));
+
     const momentum: MomentumEntry[] = [...moMap.entries()]
-      .map(([name, weekly]) => {
+      .map(([name, full]) => {
+        const weekly = full.slice(firstIdx); // data-backed windows only
         const total = weekly.reduce((a, b) => a + b, 0);
-        const prior = mean(weekly.slice(0, 5));
-        const trendPct = this.calcDelta(weekly[5], prior);
+        const thisWeek = weekly[weekly.length - 1] ?? 0;
+        const priorWindows = weekly.slice(0, -1);
+        const prior = mean(priorWindows);
+        // Need at least one prior window and a baseline of ≥1/week to trust a %.
+        const hasBaseline = priorWindows.length > 0 && prior >= 1;
+        const trendPct = hasBaseline ? clamp(this.calcDelta(thisWeek, prior)) : 0;
         return {
           name,
           weekly,
           total,
           trendPct,
-          direction:
-            trendPct > 15 ? ('up' as const) : trendPct < -15 ? ('down' as const) : ('flat' as const),
+          isNew: !hasBaseline,
+          direction: !hasBaseline
+            ? ('flat' as const)
+            : trendPct > 15
+              ? ('up' as const)
+              : trendPct < -15
+                ? ('down' as const)
+                : ('flat' as const),
         };
       })
       .filter((m) => m.total >= 3)
