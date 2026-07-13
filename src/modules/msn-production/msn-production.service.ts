@@ -146,7 +146,11 @@ export class MsnProductionService {
     await this.syncData();
   }
 
-  async syncData(): Promise<void> {
+  // `force` re-parses and re-upserts every row even when its raw hash is
+  // unchanged. Needed after a parsing-logic change (date reconciliation, name
+  // normalization, content-type inference) so cached fields are recomputed from
+  // source — a normal sync would skip unchanged rows and leave stale values.
+  async syncData(force = false): Promise<void> {
     if (this.syncing) return;
     this.syncing = true;
     this.lastError = null;
@@ -169,7 +173,7 @@ export class MsnProductionService {
 
         for (const p of pieces) {
           incomingIds.add(p.id);
-          if (existingHashes.get(p.id) === p.rawHash) continue;
+          if (!force && existingHashes.get(p.id) === p.rawHash) continue;
 
           const entity = new MsnPiece();
           Object.assign(entity, p);

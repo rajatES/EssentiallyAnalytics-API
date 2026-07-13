@@ -42,8 +42,10 @@ export class MsnProductionController {
   }
 
   @Post('sync')
-  async triggerSync() {
-    await this.service.syncData();
+  async triggerSync(@Query('force') force?: string) {
+    // ?force=true re-parses every row (ignores the unchanged-hash skip) so a
+    // parsing-logic change is backfilled onto existing rows.
+    await this.service.syncData(force === 'true');
     return this.service.getSyncStatus();
   }
 

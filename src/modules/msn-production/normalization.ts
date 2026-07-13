@@ -22,20 +22,23 @@ const FEED_ALIASES: Record<string, string> = {
 };
 
 const WRITER_ALIASES: Record<string, string> = {
-  aaindri: 'Aaindri',
-  'aaindri thakuri': 'Aaindri',
-  'aindri thakuri': 'Aaindri',
-  aadinri: 'Aaindri',
+  aaindri: 'Aaindri Thakur',
+  'aaindri thakur': 'Aaindri Thakur',
+  'aaindri thakuri': 'Aaindri Thakur',
+  'aindri thakuri': 'Aaindri Thakur',
+  aadinri: 'Aaindri Thakur',
   aaradhya: 'Aaradhya',
   aradhya: 'Aaradhya',
   aaron: 'Aaron',
   abhay: 'Abhay',
-  akanksha: 'Akansha',
-  akansha: 'Akansha',
-  aknaksha: 'Akansha',
+  akanksha: 'Akanksha Biradar',
+  akansha: 'Akanksha Biradar',
+  aknaksha: 'Akanksha Biradar',
+  'akanksha biradar': 'Akanksha Biradar',
   anjali: 'Anjali',
   ankita: 'Ankita',
-  anshuman: 'Anshuman',
+  anshuman: 'Anshuman Aryan',
+  'anshuman aryan': 'Anshuman Aryan',
   anugya: 'Anugya',
   apeksha: 'Apeksha',
   archana: 'Archana',
@@ -45,16 +48,22 @@ const WRITER_ALIASES: Record<string, string> = {
   darshan: 'Darshanbir',
   darshanbir: 'Darshanbir',
   debanjali: 'Debanjali',
-  devyanshi: 'Divyanshi',
-  divyanshi: 'Divyanshi',
+  devyanshi: 'Divyanshi Raj',
+  divyanshi: 'Divyanshi Raj',
+  'divyanshi raj': 'Divyanshi Raj',
   dheeraj: 'Dheeraj',
-  dhruv: 'Dhruv',
+  dhruv: 'Dhruv Nair',
+  'dhruv nair': 'Dhruv Nair',
   eklavya: 'Eklavya',
   evince: 'Evince',
   farheen: 'Farheen',
+  harshita: 'Harshita Saxena',
+  'harshita saxena': 'Harshita Saxena',
   hetal: 'Hetal',
   insiya: 'Insiya Johar',
   'insiya johar': 'Insiya Johar',
+  jacob: 'Jacob Gijy',
+  'jacob gijy': 'Jacob Gijy',
   manoj: 'Manoj',
   maria: 'Maria',
   monica: 'Monica',
@@ -84,9 +93,11 @@ const WRITER_ALIASES: Record<string, string> = {
   sourav: 'Sourav',
   sparsh: 'Sparsh',
   'sparsh tiwari': 'Sparsh',
-  suryakant: 'Suryakant',
+  suryakant: 'Suryakant Das',
+  'suryakant das': 'Suryakant Das',
   utsav: 'Utsav',
-  yashaswee: 'Yashaswee',
+  yashaswee: 'Kunwar Yashaswee',
+  'kunwar yashaswee': 'Kunwar Yashaswee',
   zaid: 'Zaid',
 };
 
@@ -94,8 +105,10 @@ const EDITOR_ALIASES: Record<string, string> = {
   aadesh: 'Aadesh',
   afreen: 'Afreen',
   arundhoti: 'Arundhoti',
-  harshita: 'Harshita',
-  jacob: 'Jacob',
+  harshita: 'Harshita Saxena',
+  'harshita saxena': 'Harshita Saxena',
+  jacob: 'Jacob Gijy',
+  'jacob gijy': 'Jacob Gijy',
   joyita: 'Joyita',
   kaamna: 'Kaamna',
   kalp: 'Kalp',
@@ -351,33 +364,26 @@ function swapDayMonth(d: Date): Date | null {
 }
 
 /**
- * Repair DD/MM vs MM/DD confusion in one row's lifecycle timestamps. The source
- * sheet mixes both encodings — roughly a quarter of rows arrive with month/day
- * swapped, landing in the future. Two principled passes using facts that must
- * hold for auto-populated timestamps:
- *   1. They cannot be in the future — if swapping pulls a future stamp into the
- *      past, it was swapped.
- *   2. A single piece's stamps cluster on one calendar day — swap any outlier
- *      that, once swapped, matches the row's majority date.
+ * Repair DD/MM vs MM/DD confusion in one row's lifecycle timestamps using the
+ * one signal that's safe and deterministic: a single piece's stamps cluster on
+ * one calendar day, so an outlier that — once day/month-swapped — matches the
+ * row's majority date was transposed at the source. Swap only those.
+ *
+ * NOTE: this intentionally does NOT do a wall-clock "future guard". The sheet is
+ * now read as unformatted serial numbers (dateTimeRenderOption SERIAL_NUMBER),
+ * so dates arrive unambiguous — there is no DD/MM string to misread. The old
+ * guard swapped any timestamp that merely looked future at parse time, which
+ * silently corrupted valid dates (e.g. a "July 3" piece synced while the clock
+ * still read June became "March 7"), and because `date` is cached until a row's
+ * raw hash changes, the bad value stuck. A genuine future stamp is left as-is.
  * Input/output are positional (lifecycle order); nulls pass through untouched.
  */
 export function reconcileTimestamps(
   dates: (Date | null)[],
-  now: Date = new Date(),
 ): (Date | null)[] {
   const out = dates.slice();
-  const nowMs = now.getTime();
 
-  // Pass 1 — future guard.
-  for (let i = 0; i < out.length; i++) {
-    const d = out[i];
-    if (d && d.getTime() > nowMs) {
-      const sw = swapDayMonth(d);
-      if (sw && sw.getTime() <= nowMs) out[i] = sw;
-    }
-  }
-
-  // Pass 2 — intra-row consensus.
+  // Intra-row consensus.
   const counts = new Map<string, number>();
   for (const d of out) {
     if (!d) continue;

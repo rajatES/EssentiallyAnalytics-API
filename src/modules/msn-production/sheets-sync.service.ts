@@ -440,10 +440,17 @@ export class SheetsSyncService {
     const kind = this.text(row, col, 'kind').toLowerCase();
     if (kind && kind !== 'content') return null;
 
-    const contentType = normalizeContentType(
-      this.text(row, col, 'contentType'),
-    );
+    let contentType = normalizeContentType(this.text(row, col, 'contentType'));
     let slides = parseSlides(this.cell(row, col, 'slides'));
+
+    // The source frequently leaves Type/Category blank on slideshow pieces. A
+    // blank-typed row carrying a real multi-slide count is a slideshow — infer
+    // it so the piece is counted as one (its slides always tallied regardless,
+    // which is what produced the "few SS but many slides" discrepancy). Guard on
+    // slides > 1 so a 1-"slide" article never gets misread as a slideshow.
+    if (contentType === 'Unknown' && slides !== null && slides > 1) {
+      contentType = 'Slideshow';
+    }
     if (contentType === 'Article') {
       slides = 1;
     }
