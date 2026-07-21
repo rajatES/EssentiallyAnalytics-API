@@ -10,6 +10,7 @@ import { SocialPost } from '../entities/SocialPost.entity';
 import { DemographicSnapshot } from '../entities/DemographicSnapshot.entity';
 import { DailyRevenue } from '../../revenue/entities/daily-revenue.entity';
 import { RevenueMapping } from '../../revenue/entities/revenue-mapping.entity';
+import { PostLinkComment } from '../../comment-links/entities/post-link-comment.entity';
 import {
   exchangeForLongLivedToken,
   fetchLinkedInstagramAccounts,
@@ -31,6 +32,8 @@ export class AuthController {
     private dailyRevenueRepo: Repository<DailyRevenue>,
     @InjectRepository(RevenueMapping)
     private revenueMappingRepo: Repository<RevenueMapping>,
+    @InjectRepository(PostLinkComment)
+    private postLinkCommentRepo: Repository<PostLinkComment>,
     @InjectQueue('social-sync-queue') private syncQueue: Queue,
   ) {}
 
@@ -183,6 +186,14 @@ export class AuthController {
             await this.dailyRevenueRepo.delete({ pageId: In(fbPageIds) });
             await this.revenueMappingRepo.delete({ pageId: In(fbPageIds) });
           }
+        }
+
+        // Comment content pulled from Meta lives here; it has no platform
+        // column, so scope it by the profiles being removed. Must be deleted
+        // for the "Delete all historical data" claim in our published data
+        // deletion instructions to hold true.
+        if (profileIds.length > 0) {
+          await this.postLinkCommentRepo.delete({ profileId: In(profileIds) });
         }
 
         await this.demographicRepo.delete({ platform: platformQuery as any });
