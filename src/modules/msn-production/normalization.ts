@@ -158,10 +158,19 @@ const STATUS_ALIASES: Record<string, string> = {
   'sent back': 'Sent Back',
   sb: 'Sent Back',
   trashed: 'Trashed',
+  trash: 'Trashed',
   scraped: 'Scrapped',
   scrapped: 'Scrapped',
   verified: 'Verified',
+  // Common source typos for "Verified" — without these the piece silently
+  // fails the `=== 'Verified'` check and drops out of the edited/editor tallies.
+  verifed: 'Verified',
+  verfied: 'Verified',
+  verifiedd: 'Verified',
   verifying: 'Verifying',
+  hold: 'On Hold',
+  're-published': 'Published',
+  republished: 'Published',
   'moved to next day': 'Moved Forward',
   'moved forward': 'Moved Forward',
 };
