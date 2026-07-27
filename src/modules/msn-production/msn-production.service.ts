@@ -490,6 +490,113 @@ export class MsnProductionService {
     );
   }
 
+  /**
+   * Canonical content bucket for a piece. Recognized tags map straight through;
+   * anything else — a blank Type/Category, or a non-standard value the source
+   * types into that cell (a feed/tour name like "PGA Tour", a format like
+   * "Listicle", a stray note) — is classified by slide count: a genuinely
+   * multi-slide piece is a slideshow, everything else an article.
+   *
+   * Every per-type breakdown routes through this so the splits are EXHAUSTIVE:
+   * each piece lands in exactly one bucket, so articles + slideshows always sums
+   * back to the piece total. Without it, unrecognized types inflated the total
+   * (e.g. an editor's "Edited") while appearing in neither the Articles nor the
+   * SS column.
+   */
+  private contentBucket(p: MsnPiece): 'article' | 'slideshow' | 'ssAutomation' {
+    if (p.contentType === 'SS Automation') return 'ssAutomation';
+    if (p.contentType === 'Slideshow') return 'slideshow';
+    if (p.contentType === 'Article') return 'article';
+    return (p.slides ?? 0) > 1 ? 'slideshow' : 'article';
+  }
+
+  /** True when a piece counts toward the "SS" column (slideshow or SS automation). */
+  private isSlideshow(p: MsnPiece): boolean {
+    return this.contentBucket(p) !== 'article';
+  }
+
+  /**
+   * Slide count for tallies. An article is a single page, so it always counts as
+   * 1 — the source leaves its slide cell blank, and rows synced before that was
+   * defaulted still carry null/0. A slideshow contributes its real slide count
+   * (0 until the source fills it in).
+   */
+  private slidesOf(p: MsnPiece): number {
+    return this.contentBucket(p) === 'article' ? 1 : p.slides ?? 0;
+  }
+
+  /**
+   * Canonicalise person names for the per-person tables (writers / editors /
+   * allotters). The source types one person many ways — full name, first name,
+   * a spelling or case variant — and the alias maps only cover first names, so a
+   * single person split across several rows and no row matched the source total.
+   * Each name maps to a canonical display name:
+   *   1. its roster full-name, when the roster identifies it uniquely (an exact
+   *      match, or a unique first-token match);
+   *   2. else the fullest variant seen in the DATA, when a bare first name is a
+   *      unique prefix of exactly one longer name;
+   *   3. else itself.
+   * A first name shared by two rostered people resolves via neither 1 nor 2, so
+   * two distinct people are never merged.
+   */
+  private buildNameMap(
+    names: Iterable<string>,
+    roster: string[],
+  ): Map<string, string> {
+    const clean = (s: string) => (s ?? '').trim();
+    const dataNames = [
+      ...new Set([...names].map(clean).filter((n) => n && n !== 'Unknown')),
+    ];
+    const rosterNames = roster.map(clean).filter(Boolean);
+
+    // First token → the distinct multi-token ("full") names seen anywhere, keyed
+    // by lowercase (so case/spacing variants collapse) with a display spelling
+    // that prefers the roster's casing.
+    const fullByFirst = new Map<string, Map<string, string>>();
+    const addFull = (n: string, preferred: boolean) => {
+      if (n.split(/\s+/).length < 2) return;
+      const first = n.toLowerCase().split(/\s+/)[0];
+      const lower = n.toLowerCase();
+      if (!fullByFirst.has(first)) fullByFirst.set(first, new Map());
+      const m = fullByFirst.get(first)!;
+      if (preferred || !m.has(lower)) m.set(lower, n);
+    };
+    for (const n of rosterNames) addFull(n, true);
+    for (const n of dataNames) addFull(n, false);
+
+    // Exact roster display name, case-insensitive.
+    const rosterByLower = new Map<string, string>();
+    for (const n of rosterNames) {
+      const low = n.toLowerCase();
+      if (!rosterByLower.has(low)) rosterByLower.set(low, n);
+    }
+
+    const out = new Map<string, string>();
+    for (const n of dataNames) {
+      const low = n.toLowerCase();
+      const first = low.split(/\s+/)[0];
+      const fulls = fullByFirst.get(first);
+      if (fulls && fulls.size === 1) {
+        // Exactly one full name for this first token → it's the canonical
+        // identity (collapses "Rudra" ↔ "Rudra Dubey", even if both are
+        // rostered). Two different full names sharing a first name stay split.
+        out.set(n, [...fulls.values()][0]);
+      } else if (rosterByLower.has(low)) {
+        out.set(n, rosterByLower.get(low)!);
+      } else {
+        out.set(n, n);
+      }
+    }
+    return out;
+  }
+
+  /** Roster display-names, used to anchor person-name canonicalisation. */
+  private async rosterNames(): Promise<string[]> {
+    return (await this.rosterRepo.find())
+      .map((r) => r.name)
+      .filter((n): n is string => !!n);
+  }
+
   // ── Public query methods ──
 
   async getFilterOptions(): Promise<FilterOptions> {
@@ -655,9 +762,10 @@ export class MsnProductionService {
       if (key === 'unknown') continue;
       const b = getBucket(key);
       b.allotted++;
-      if (r.contentType === 'Article') b.article++;
-      else if (r.contentType === 'Slideshow') b.slideshow++;
-      else if (r.contentType === 'SS Automation') b.ssAutomation++;
+      const bucket = this.contentBucket(r);
+      if (bucket === 'article') b.article++;
+      else if (bucket === 'slideshow') b.slideshow++;
+      else b.ssAutomation++;
       if (this.countsAsPublished(r)) b.published++;
     }
 
@@ -756,9 +864,10 @@ export class MsnProductionService {
       f.allotted++;
       if (this.isSubmitted(r)) f.produced++;
       if (this.countsAsPublished(r)) f.published++;
-      if (r.contentType === 'Article') f.articles++;
-      else if (r.contentType === 'Slideshow') f.slideshows++;
-      else if (r.contentType === 'SS Automation') f.ssAutomation++;
+      const bucket = this.contentBucket(r);
+      if (bucket === 'article') f.articles++;
+      else if (bucket === 'slideshow') f.slideshows++;
+      else f.ssAutomation++;
 
       const lt = hoursBetween(r.allottedAt, r.publishedAt);
       if (lt !== null) {
@@ -786,6 +895,12 @@ export class MsnProductionService {
     // pick day. So the date window filters on the pick date here.
     const rows = await this.filterByAnchor(params, 'picked');
 
+    const nameMap = this.buildNameMap(
+      rows.map((r) => r.writer),
+      await this.rosterNames(),
+    );
+    const canon = (n: string) => nameMap.get((n ?? '').trim()) ?? n;
+
     const wMap = new Map<string, WriterStats>();
     const leadTimes = new Map<string, number[]>();
     const sentBack = new Map<string, number>();
@@ -810,26 +925,26 @@ export class MsnProductionService {
 
     for (const r of rows) {
       if (r.writer === 'Unknown') continue;
-      const w = getOrCreate(r.writer);
+      const writer = canon(r.writer);
+      const w = getOrCreate(writer);
       w.allotted++;
       w.total++;
       if (this.isSubmitted(r)) w.submitted++;
       if (this.countsAsPublished(r)) w.published++;
-      if (r.contentType === 'Article') w.articles++;
-      else if (r.contentType === 'Slideshow' || r.contentType === 'SS Automation')
-        w.slideshows++;
+      if (this.isSlideshow(r)) w.slideshows++;
+      else w.articles++;
 
       if (
         DROPPED_STATUSES.includes(r.publishingStatus) ||
         DROPPED_STATUSES.includes(r.editorialStatus)
       ) {
-        sentBack.set(r.writer, (sentBack.get(r.writer) || 0) + 1);
+        sentBack.set(writer, (sentBack.get(writer) || 0) + 1);
       }
 
       const lt = hoursBetween(r.allottedAt, r.publishedAt);
       if (lt !== null) {
-        if (!leadTimes.has(r.writer)) leadTimes.set(r.writer, []);
-        leadTimes.get(r.writer)!.push(lt);
+        if (!leadTimes.has(writer)) leadTimes.set(writer, []);
+        leadTimes.get(writer)!.push(lt);
       }
     }
 
@@ -855,6 +970,12 @@ export class MsnProductionService {
     // the editor analogue of the writer's pick — not the allotment day.
     const rows = await this.filterByAnchor(params, 'verify');
 
+    const nameMap = this.buildNameMap(
+      rows.map((r) => r.editor),
+      await this.rosterNames(),
+    );
+    const canon = (n: string) => nameMap.get((n ?? '').trim()) ?? n;
+
     const eMap = new Map<
       string,
       {
@@ -867,17 +988,16 @@ export class MsnProductionService {
 
     for (const r of rows) {
       if (!r.editor || r.editor === 'Unknown') continue;
-      // PR pieces publish without review — not the editor's work.
-      if (this.isPrPublished(r)) continue;
-      if (!eMap.has(r.editor)) {
-        eMap.set(r.editor, {
+      const editor = canon(r.editor);
+      if (!eMap.has(editor)) {
+        eMap.set(editor, {
           count: 0,
           turnarounds: [],
           sentBack: 0,
           types: new Set(),
         });
       }
-      const e = eMap.get(r.editor)!;
+      const e = eMap.get(editor)!;
       e.count++;
       e.types.add(r.contentType);
       if (
@@ -886,10 +1006,14 @@ export class MsnProductionService {
       )
         e.sentBack++;
       // Editor turnaround = verifying start → end (falls back to submit→publish).
-      const ta =
-        hoursBetween(r.verifyStart, r.verifyEnd) ??
-        hoursBetween(r.submittedAt, r.publishedAt);
-      if (ta !== null) e.turnarounds.push(ta);
+      // PR pieces are self-published — their verify stamps are write times, so
+      // keep them out of the review-turnaround median (they still count above).
+      if (!this.isPrPublished(r)) {
+        const ta =
+          hoursBetween(r.verifyStart, r.verifyEnd) ??
+          hoursBetween(r.submittedAt, r.publishedAt);
+        if (ta !== null) e.turnarounds.push(ta);
+      }
     }
 
     return [...eMap.entries()]
@@ -976,6 +1100,16 @@ export class MsnProductionService {
       await this.pieceRepo.find({ where: this.buildWhere(params, false) }),
     );
 
+    // Collapse name variants (full vs first vs spelling/case) to one canonical
+    // person per dimension, so a single person is one row, not several.
+    const roster = await this.rosterNames();
+    const edMap = this.buildNameMap(rows.map((r) => r.editor), roster);
+    const wrMap = this.buildNameMap(rows.map((r) => r.writer), roster);
+    const alMap = this.buildNameMap(rows.map((r) => r.allottedBy), roster);
+    const cEditor = (n: string) => edMap.get((n ?? '').trim()) ?? n;
+    const cWriter = (n: string) => wrMap.get((n ?? '').trim()) ?? n;
+    const cAllot = (n: string) => alMap.get((n ?? '').trim()) ?? n;
+
     const zero = (): ProductionCounts => ({
       pieces: 0,
       articles: 0,
@@ -984,13 +1118,9 @@ export class MsnProductionService {
     });
     const add = (c: ProductionCounts, r: MsnPiece) => {
       c.pieces++;
-      if (r.contentType === 'Article') c.articles++;
-      else if (
-        r.contentType === 'Slideshow' ||
-        r.contentType === 'SS Automation'
-      )
-        c.slideshows++;
-      c.slides += r.slides ?? 0;
+      if (this.isSlideshow(r)) c.slideshows++;
+      else c.articles++;
+      c.slides += this.slidesOf(r);
     };
     // Edited = the piece cleared review. A published/scheduled piece implies
     // review EXCEPT for PR pieces, which go live without it — those are tracked
@@ -1051,7 +1181,10 @@ export class MsnProductionService {
       // picked ≥ drafted and the two writer sub-deltas non-negative even when
       // the pick timestamp is missing in the source.
       const picked = !!r.pickedAt || drafted;
-      const edited = !pr && isEdited(r);
+      // PR-published pieces are self-published by the writer; the source
+      // auto-fills their editorial fields (Editor = Writer, Verified), so they
+      // now count as edited work rather than being excluded.
+      const edited = isEdited(r);
 
       // The allotted→picked→drafted→edited funnel is scored as one cohort: every
       // metric below counts pieces ALLOTTED in the window and asks how far each
@@ -1080,9 +1213,10 @@ export class MsnProductionService {
       if (allotIn && eh !== null) editHours.push(eh);
 
       if (allotIn && r.allottedBy && r.allottedBy !== 'Unknown') {
-        if (!allotters.has(r.allottedBy))
-          allotters.set(r.allottedBy, { counts: zero(), days: new Set() });
-        const a = allotters.get(r.allottedBy)!;
+        const name = cAllot(r.allottedBy);
+        if (!allotters.has(name))
+          allotters.set(name, { counts: zero(), days: new Set() });
+        const a = allotters.get(name)!;
         add(a.counts, r);
         if (allotDay) a.days.add(allotDay);
       }
@@ -1093,15 +1227,16 @@ export class MsnProductionService {
       // belongs to its allotment-day cohort, so the writer isn't penalised for
       // work that simply hadn't reached them when the day was tallied.
       if (allotIn && r.writer && r.writer !== 'Unknown') {
-        if (!writers.has(r.writer))
-          writers.set(r.writer, {
+        const name = cWriter(r.writer);
+        if (!writers.has(name))
+          writers.set(name, {
             allotted: zero(),
             picked: zero(),
             drafted: zero(),
             hours: [],
             days: new Set(),
           });
-        const w = writers.get(r.writer)!;
+        const w = writers.get(name)!;
         add(w.allotted, r);
         if (picked) add(w.picked, r);
         if (drafted) add(w.drafted, r);
@@ -1109,17 +1244,20 @@ export class MsnProductionService {
         if (wh !== null) w.hours.push(wh);
       }
 
-      // PR pieces bypass review, so they aren't an editor's work — skip them
-      // from per-editor stats entirely (kept in volume counts above).
-      if (verifyIn && r.editor && r.editor !== 'Unknown' && !pr) {
-        if (!editors.has(r.editor))
-          editors.set(r.editor, {
+      // PR-published pieces are self-published without a separate review; the
+      // source auto-fills Editor = Writer for them, so they count as the
+      // writer's own editing output here. Their write-time "turnaround" is kept
+      // out of the edit-time median below (`eh` is null for PR).
+      if (verifyIn && r.editor && r.editor !== 'Unknown') {
+        const name = cEditor(r.editor);
+        if (!editors.has(name))
+          editors.set(name, {
             counts: zero(),
             pending: 0,
             hours: [],
             days: new Set(),
           });
-        const e = editors.get(r.editor)!;
+        const e = editors.get(name)!;
         if (edited) {
           add(e.counts, r);
           if (verifyDay) e.days.add(verifyDay);
@@ -1132,12 +1270,9 @@ export class MsnProductionService {
 
     summary.pickRate = rate(summary.picked.pieces, summary.allotted.pieces);
     summary.draftRate = rate(summary.drafted.pieces, summary.allotted.pieces);
-    // Edit rate is measured against drafts that are actually eligible for
-    // review — PR-published drafts skip it by design, so exclude them.
-    summary.editRate = rate(
-      summary.edited.pieces,
-      summary.drafted.pieces - summary.prPublished.pieces,
-    );
+    // Edit rate = drafts that cleared review, over all drafts. PR self-edits
+    // now count as edited, so PR drafts stay in the denominator too.
+    summary.editRate = rate(summary.edited.pieces, summary.drafted.pieces);
     writeHours.sort((a, b) => a - b);
     editHours.sort((a, b) => a - b);
     summary.medianWriteHours = median(writeHours);
@@ -1217,9 +1352,10 @@ export class MsnProductionService {
       if (!buckets.has(key))
         buckets.set(key, { article: 0, slideshow: 0, ssAutomation: 0 });
       const b = buckets.get(key)!;
-      if (r.contentType === 'Article') b.article++;
-      else if (r.contentType === 'Slideshow') b.slideshow++;
-      else if (r.contentType === 'SS Automation') b.ssAutomation++;
+      const bucket = this.contentBucket(r);
+      if (bucket === 'article') b.article++;
+      else if (bucket === 'slideshow') b.slideshow++;
+      else b.ssAutomation++;
     }
 
     return [...buckets.entries()]
@@ -1300,15 +1436,12 @@ export class MsnProductionService {
         });
       }
       const entry = dayMap.get(key)!;
-      if (r.contentType === 'Article') {
-        entry.articles++;
-        entry.total++;
-      } else if (
-        r.contentType === 'Slideshow' ||
-        r.contentType === 'SS Automation'
-      ) {
+      if (this.isSlideshow(r)) {
         entry.slideshows++;
         entry.slides += r.slides ?? 0;
+        entry.total++;
+      } else {
+        entry.articles++;
         entry.total++;
       }
     }

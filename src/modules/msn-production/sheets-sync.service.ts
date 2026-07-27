@@ -443,17 +443,27 @@ export class SheetsSyncService {
     let contentType = normalizeContentType(this.text(row, col, 'contentType'));
     let slides = parseSlides(this.cell(row, col, 'slides'));
 
-    // The source frequently leaves Type/Category blank on slideshow pieces. A
-    // blank-typed row carrying a real multi-slide count is a slideshow — infer
-    // it so the piece is counted as one (its slides always tallied regardless,
-    // which is what produced the "few SS but many slides" discrepancy). Guard on
-    // slides > 1 so a 1-"slide" article never gets misread as a slideshow.
-    if (contentType === 'Unknown' && slides !== null && slides > 1) {
-      contentType = 'Slideshow';
+    // Resolve every piece to a canonical type so downstream per-type breakdowns
+    // stay exhaustive (articles + slideshows === total). The source frequently
+    // leaves Type/Category blank, or types a non-standard value into it (a
+    // feed/tour name, a format label, a stray note); such a cell is classified
+    // by slide count — a genuinely multi-slide piece is a slideshow, everything
+    // else an article.
+    if (
+      contentType !== 'Article' &&
+      contentType !== 'Slideshow' &&
+      contentType !== 'SS Automation'
+    ) {
+      contentType = slides !== null && slides > 1 ? 'Slideshow' : 'Article';
     }
+    // Articles are single-page. Writers routinely leave No-of-Slides blank on
+    // them (there is nothing to count), which then reads as 0/"missing"
+    // downstream — default it to 1 so an article always tallies as one slide.
     if (contentType === 'Article') {
       slides = 1;
     }
+    // A slideshow with a 0 slide count simply hasn't had it filled in yet — keep
+    // it null rather than tallying a zero.
     if (
       (contentType === 'Slideshow' || contentType === 'SS Automation') &&
       slides === 0
