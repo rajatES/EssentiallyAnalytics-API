@@ -3,6 +3,10 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Cron } from '@nestjs/schedule';
 import { BigQueryService } from '../../common/bigquery/bigquery.service';
+import {
+  buildPlatformSourceFilter,
+  resolveTrafficPlatform,
+} from '../../common/traffic-platforms';
 import { TrafficDaily } from './entities/traffic-daily.entity';
 import { TrafficCountryDaily } from './entities/traffic-country-daily.entity';
 import { subDays, format } from 'date-fns';
@@ -549,12 +553,22 @@ export class AnalyticsService {
   ) {
     if (!value) return;
 
-    // Normalize Facebook/Instagram traffic variations coming from Google Analytics
-    if (column === 'utmSource' && value === 'fb') {
-      qb.andWhere(
-        `(${alias}.${column} ILIKE '%face%' OR ${alias}.${column} ILIKE '%ig%' OR ${alias}.${column} ILIKE '%insta%' OR ${alias}.${column} IN ('fb', 'Fb'))`,
-      );
-      return;
+    // utmSource is a platform selector, not a literal value: Google Analytics
+    // reports each platform under many spellings, so resolve it through the
+    // shared registry (see common/traffic-platforms.ts). Anything that isn't a
+    // known platform key falls through to plain equality below.
+    if (column === 'utmSource') {
+      const platform = resolveTrafficPlatform(value);
+      if (platform) {
+        const { sql, params } = buildPlatformSourceFilter(
+          platform,
+          alias,
+          column,
+          `plat_${alias}`,
+        );
+        qb.andWhere(sql, params);
+        return;
+      }
     }
 
     if (Array.isArray(value)) {
