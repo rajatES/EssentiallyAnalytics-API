@@ -8,6 +8,10 @@ import { RevenueMapping } from '../revenue/entities/revenue-mapping.entity';
 import { AnalyticsSnapshot } from '../facebook/entities/AnalyticsSnapshot.entity';
 import { SocialProfile } from '../facebook/entities/SocialProfile.entity';
 import { SocialPost } from '../facebook/entities/SocialPost.entity';
+import {
+  buildPlatformSourceFilter,
+  getTrafficPlatform,
+} from '../../common/traffic-platforms';
 
 @Injectable()
 export class CsvGeneratorService {
@@ -42,7 +46,14 @@ export class CsvGeneratorService {
     const dates = this.enumerateDates(startDate, endDate).reverse();
     const dateHeaders = dates.map((d) => this.fmtHumanDate(d));
 
-    // Per-(medium, date) sessions
+    // Per-(medium, date) sessions.
+    // Source matching comes from the shared platform registry so this report and
+    // the traffic dashboard always agree. The previous inline pattern used
+    // ILIKE '%ig%', which also swept in 'aigeon', 'huddle-website-signup.
+    // beehiiv.com' and 'tigernet.com' — roughly 177k non-Facebook sessions.
+    const fbPlatform = getTrafficPlatform('fb')!;
+    const fbSource = buildPlatformSourceFilter(fbPlatform, 'a', 'utmSource');
+
     const rows = await this.utmRepo
       .createQueryBuilder('a')
       .select([
@@ -54,9 +65,7 @@ export class CsvGeneratorService {
         `a.date::date >= :startDate::date AND a.date::date <= :endDate::date`,
         { startDate, endDate },
       )
-      .andWhere(
-        `(a.utmSource ILIKE '%face%' OR a.utmSource ILIKE '%ig%' OR a.utmSource ILIKE '%insta%' OR a.utmSource IN ('fb', 'Fb'))`,
-      )
+      .andWhere(fbSource.sql, fbSource.params)
       .groupBy('a.utmMedium')
       .addGroupBy('a.date')
       .getRawMany();
