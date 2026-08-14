@@ -1,7 +1,8 @@
 -- Landing-page (URL pattern) mappings. Backs the "Landing Pages" tab in
 -- Traffic → Mappings, and the page/team columns in the Top Landing Pages panel.
 --
--- Production runs with synchronize=false, so run this once before deploying:
+-- Production currently runs with DB_SYNC=true, so TypeORM creates the table
+-- itself and only the seed rows below actually need this file. Run it by hand:
 --
 --   docker exec -i social_postgres psql -U postgres -d social_studio_db \
 --     < seeds/002-page-path-mappings.sql

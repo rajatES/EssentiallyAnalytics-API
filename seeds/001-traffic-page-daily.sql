@@ -1,8 +1,12 @@
 -- Landing-page traffic aggregate. Backs the "Top Landing Pages" panel.
 --
--- Production runs with synchronize=false (DB_SYNC is unset in .env.production),
--- so entities do not create their own tables there. Run this once against the
--- production database before deploying the code that reads it:
+-- Production currently runs with DB_SYNC=true, so TypeORM creates this table
+-- from the entity on boot and this file is not strictly required there. It
+-- exists so the schema is reproducible without relying on synchronize — which
+-- should be turned off in production, since it lets a deploy alter or drop
+-- columns to match an entity.
+--
+-- Run it by hand on any environment where synchronize is off:
 --
 --   docker exec -i social_postgres psql -U postgres -d social_studio_db \
 --     < seeds/001-traffic-page-daily.sql
