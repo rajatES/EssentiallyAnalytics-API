@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { PageMapping } from './entities/page-mapping.entity';
+import { PagePathMapping } from './entities/page-path-mapping.entity';
 import { Readable } from 'stream';
 import * as readline from 'readline';
 
@@ -10,7 +11,71 @@ export class PageMappingsService {
   constructor(
     @InjectRepository(PageMapping)
     private mappingRepository: Repository<PageMapping>,
+    @InjectRepository(PagePathMapping)
+    private pathRepository: Repository<PagePathMapping>,
   ) {}
+
+  // ── Landing-page (URL pattern) mappings ──────────────────────────────
+  // Separate from the UTM mappings above rather than folded into them: these
+  // match a glob instead of an exact medium, and they are not platform-scoped.
+
+  findAllPaths() {
+    return this.pathRepository.find({
+      order: { priority: 'DESC', pattern: 'ASC' },
+    });
+  }
+
+  private normalizePath(partial: Partial<PagePathMapping>) {
+    const out: Partial<PagePathMapping> = { ...partial };
+    if (typeof out.pattern === 'string') {
+      let p = out.pattern.trim();
+      // Accept a full URL pasted from the browser and keep only the path.
+      const asUrl = p.match(/^https?:\/\/[^/]+(\/.*)$/i);
+      if (asUrl) p = asUrl[1];
+      if (p && !p.startsWith('/') && !p.startsWith('*')) p = `/${p}`;
+      out.pattern = p.split(/[?#]/)[0];
+    }
+    if ('team' in out) {
+      const t = out.team;
+      out.team = typeof t === 'string' && t.trim() ? t.trim() : null;
+    }
+    if (typeof out.pageName === 'string') out.pageName = out.pageName.trim();
+    if (typeof out.category === 'string') {
+      out.category = out.category.trim() || 'Uncategorized';
+    }
+    return out;
+  }
+
+  async createPath(partial: Partial<PagePathMapping>) {
+    const data = this.normalizePath(partial);
+    if (!data.pattern) throw new Error('Pattern is required');
+    if (!data.pageName) throw new Error('Page name is required');
+    return this.pathRepository.save(this.pathRepository.create(data));
+  }
+
+  async updatePath(id: number, partial: Partial<PagePathMapping>) {
+    await this.pathRepository.update(id, this.normalizePath(partial));
+    return this.pathRepository.findOneBy({ id });
+  }
+
+  async removePath(id: number) {
+    await this.pathRepository.delete(id);
+    return { deleted: true };
+  }
+
+  /** Batch team assignment, mirroring the UTM mappings' batch endpoint. */
+  async updatePathTeams(ids: number[], team: string | null) {
+    const normalized = typeof team === 'string' && team.trim() ? team.trim() : null;
+    if (ids.length) {
+      await this.pathRepository
+        .createQueryBuilder()
+        .update()
+        .set({ team: normalized })
+        .whereInIds(ids)
+        .execute();
+    }
+    return this.findAllPaths();
+  }
 
   async findAll() {
     // One-shot cleanup: normalise any empty-string team values to NULL.

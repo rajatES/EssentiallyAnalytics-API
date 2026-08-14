@@ -91,6 +91,43 @@ export class AnalyticsController {
     );
   }
 
+  /** Top landing pages for a platform — the readable view for untagged traffic. */
+  @Get('pages')
+  async getTopPages(
+    @Query('startDate') startDate: string,
+    @Query('endDate') endDate: string,
+    @Query('utmSource') utmSource?: string | string[],
+    @Query('limit') limit?: string,
+  ) {
+    if (!startDate || !endDate) {
+      throw new HttpException(
+        'Missing startDate or endDate',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+    const filters = { utmSource: this.normalizeArray(utmSource) };
+    const parsedLimit = Number(limit);
+    return await this.analyticsService.getTopPages(
+      startDate,
+      endDate,
+      filters,
+      Number.isFinite(parsedLimit) && parsedLimit > 0 ? parsedLimit : 100,
+    );
+  }
+
+  /** Rebuild the landing-page aggregate in BQ and sync it. Defaults to 3 days. */
+  @Post('sync/pages')
+  async syncPages(@Query('days') days?: string) {
+    const parsed = Number(days);
+    const result = await this.analyticsService.refreshPageMetrics(
+      Number.isFinite(parsed) && parsed > 0 ? Math.min(parsed, 120) : 3,
+    );
+    return {
+      status: 'success',
+      message: `Page metrics refreshed for ${result.start}..${result.end} (${result.count} rows)`,
+    };
+  }
+
   @Post('sync/manual')
   async triggerManualSync() {
     await this.analyticsService.syncBigQueryData();

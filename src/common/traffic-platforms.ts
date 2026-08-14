@@ -139,3 +139,49 @@ export function buildPlatformSourceFilter(
 
   return { sql: `(${clauses.join(' OR ')})`, params };
 }
+
+/** Reject anything that isn't a plain source token, so literals can be inlined. */
+function assertSafeLiteral(value: string): string {
+  if (!/^[a-z0-9._&-]+$/.test(value)) {
+    throw new Error(`Unsafe traffic-platform source literal: ${value}`);
+  }
+  return value;
+}
+
+/**
+ * Same matching rules as buildPlatformSourceFilter, rendered as standalone
+ * BigQuery SQL with the values inlined.
+ *
+ * BigQuery uses @named parameters rather than TypeORM's :named ones, and this
+ * predicate is embedded inside a CREATE TABLE statement, so inlining is simpler
+ * than threading params through. Every value comes from the hardcoded registry
+ * above and is re-validated by assertSafeLiteral, so there is no injection path.
+ *
+ * Pass no platform to match all of them (used when building the shared
+ * page-level aggregate, which stores every platform in one table).
+ */
+export function buildPlatformSourceSqlBQ(
+  column: string,
+  platform?: TrafficPlatformDef,
+): string {
+  const targets = platform ? [platform] : TRAFFIC_PLATFORMS;
+  const col = `LOWER(${column})`;
+  const clauses: string[] = [];
+
+  const exact = targets.flatMap((p) => p.exact).map(assertSafeLiteral);
+  if (exact.length) {
+    clauses.push(`${col} IN (${exact.map((s) => `'${s}'`).join(', ')})`);
+  }
+
+  for (const p of targets) {
+    for (const domain of p.domains.map(assertSafeLiteral)) {
+      clauses.push(`${col} = '${domain}'`);
+      clauses.push(`ENDS_WITH(${col}, '.${domain}')`);
+    }
+    for (const prefix of p.prefixes.map(assertSafeLiteral)) {
+      clauses.push(`STARTS_WITH(${col}, '${prefix}')`);
+    }
+  }
+
+  return `(${clauses.join(' OR ')})`;
+}

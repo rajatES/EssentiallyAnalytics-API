@@ -1,0 +1,27 @@
+id,category,team,platform,pageName,utmSource,utmMediums
+,CFB,,Reddit,r/CFB_v2,reddit,"cfbv2, cfbv"
+,NFL,,Reddit,r/NFLForum,reddit,nflforum
+,NFL,,Reddit,r/NFLMockDraft,reddit,nflmockdraft
+,NFL,,Reddit,r/NFLFreeAgency,reddit,nflfreeagency
+,NFL,,Reddit,r/NFLRookies,reddit,nflrookies
+,NFL,,Reddit,r/NFLMemesWars,reddit,"nflmemeswars, nflmemeswar"
+,NFL,,Reddit,r/Chiefs_v2,reddit,chiefs_v2
+,NBA,,Reddit,r/NBAGossips,reddit,nbagossips
+,NBA,,Reddit,r/NBAOldSchool,reddit,nbaoldschool
+,NBA,,Reddit,r/LakersV2,reddit,lakersv2
+,NCAA,,Reddit,r/NCAAHoops,reddit,ncaahoops
+,WNBA,,Reddit,r/WNBAGossips,reddit,wnbagossips
+,Golf,,Reddit,r/GolfUnfiltered,reddit,"golfunfiltered, golf_unfiltered"
+,Golf,,Reddit,r/TigerWoods,reddit,tigerwoods
+,MMA,,Reddit,r/MMAWeekly,reddit,mmaweekly
+,MMA,,Reddit,r/UFCPosting,reddit,ufcposting
+,NASCAR,,Reddit,r/NASCARGossips,reddit,nascargossips
+,Soccer,,Reddit,r/SoccerCentral,reddit,soccercentral
+,General Sports,,Reddit,r/SportsGossips,reddit,"sportsgossips, sportsgossip, sportsgossipe"
+,General Sports,,Reddit,r/SportsBroadcasters,reddit,sportsbroadcasters
+,General Sports,,Reddit,r/BroadcastingQueens,reddit,broadcastingqueens
+,General Sports,,Reddit,r/BlackAthletes,reddit,blackathletes
+,General Sports,,Reddit,r/SportsWiki,reddit,sportswiki
+,Reddit General,,Reddit,Reddit General (catch-all tag),reddit,"es_reddit_general, es_reddit_genera, es_reddit_generalt, es_reddit_generalreddit_general, subreddit, reddit"
+,Organic Referral,,Reddit,Reddit Organic (referral),reddit,referral
+,Organic Referral,,Reddit,Reddit Untagged (no medium),reddit,(none)

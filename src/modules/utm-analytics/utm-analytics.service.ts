@@ -5,8 +5,15 @@ import { Cron } from '@nestjs/schedule';
 import { BigQueryService } from '../../common/bigquery/bigquery.service';
 import {
   buildPlatformSourceFilter,
+  buildPlatformSourceSqlBQ,
   resolveTrafficPlatform,
 } from '../../common/traffic-platforms';
+import { TrafficPageDaily } from './entities/traffic-page-daily.entity';
+import { PagePathMapping } from '../page-mappings/entities/page-path-mapping.entity';
+import {
+  compilePathMappings,
+  matchPagePath,
+} from '../../common/page-path-match';
 import { TrafficDaily } from './entities/traffic-daily.entity';
 import { TrafficCountryDaily } from './entities/traffic-country-daily.entity';
 import { subDays, format } from 'date-fns';
@@ -23,8 +30,15 @@ export class AnalyticsService {
     private readonly trafficRepo: Repository<TrafficDaily>,
     @InjectRepository(TrafficCountryDaily)
     private readonly countryRepo: Repository<TrafficCountryDaily>,
+    @InjectRepository(TrafficPageDaily)
+    private readonly pageRepo: Repository<TrafficPageDaily>,
+    @InjectRepository(PagePathMapping)
+    private readonly pathMappingRepo: Repository<PagePathMapping>,
     private readonly bq: BigQueryService,
   ) {}
+
+  private static readonly BQ_DATASET =
+    'bigquerytest-486307.analytics_266571177';
 
   // Groups by (date, utmMedium) only — keeps result set small vs the full granular query.
   async getAggregatedMetrics(startDate: string, endDate: string, filters: any) {
@@ -93,6 +107,72 @@ export class AnalyticsService {
     qb.limit(10);
 
     return await qb.getRawMany();
+  }
+
+  /**
+   * Top landing pages for a platform — the page each session started on.
+   *
+   * This is the readable breakdown for untagged organic traffic, where
+   * utm_medium is a single 'referral' bucket and getAggregatedMetrics can only
+   * ever return one row.
+   */
+  async getTopPages(
+    startDate: string,
+    endDate: string,
+    filters: { utmSource?: string | string[] } = {},
+    limit = 100,
+  ) {
+    const qb = this.pageRepo.createQueryBuilder('p');
+    qb.where('p.date >= :startDate AND p.date <= :endDate', {
+      startDate,
+      endDate,
+    });
+
+    this.applyFilter(qb, 'utmSource', filters.utmSource, 'p');
+
+    qb.select([
+      'p.pagePath as page_path',
+      'SUM(p.sessions) as sessions',
+      'SUM(p.pageviews) as pageviews',
+      'SUM(p.users) as users',
+    ]);
+    qb.groupBy('p.pagePath');
+    qb.orderBy('sessions', 'DESC');
+    qb.limit(Math.min(Math.max(limit, 1), 500));
+
+    const rows = await qb.getRawMany();
+
+    // Resolve each landing page through the URL-pattern mappings, so the panel
+    // can group by page/team the same way the UTM table does. Unmapped paths
+    // fall back to the section derived from the slug, which keeps the view
+    // useful before anyone has configured a single mapping.
+    const compiled = compilePathMappings(await this.pathMappingRepo.find());
+
+    return rows.map((r) => {
+      const match = matchPagePath(r.page_path, compiled);
+      return {
+        page_path: r.page_path,
+        sessions: Number(r.sessions) || 0,
+        pageviews: Number(r.pageviews) || 0,
+        users: Number(r.users) || 0,
+        section: match?.category || this.sectionFromPath(r.page_path),
+        pageName: match?.pageName || null,
+        team: match?.team || null,
+        matchedPattern: match?.pattern || null,
+      };
+    });
+  }
+
+  /**
+   * First path segment, used to group pages into a sport/section.
+   * ES article slugs start with the vertical ('/wnba-basketball-news-…'), so
+   * the leading token before '-news'/'-active' is a good enough grouping key.
+   */
+  private sectionFromPath(path?: string): string {
+    if (!path || path === '/') return 'Home';
+    const first = path.replace(/^\//, '').split('/')[0] || '';
+    const token = first.split('-')[0];
+    return token ? token.toUpperCase() : 'Other';
   }
 
   async getHeadlines(filters: { utmSource?: string | string[] } = {}) {
@@ -225,6 +305,14 @@ export class AnalyticsService {
   @Cron('0 19 * * *', { timeZone: 'Asia/Kolkata' })
   async scheduledSync() {
     await this.syncBigQueryData(false);
+
+    // Landing-page metrics are a separate BQ table with its own build step;
+    // isolate its failures so they can't take down the main traffic sync.
+    try {
+      await this.refreshPageMetrics(3);
+    } catch (error) {
+      this.logger.error('Page metrics refresh failed:', error);
+    }
   }
 
   // One-shot historical backfill. Rebuilds the BigQuery aggregates across the
@@ -346,6 +434,134 @@ export class AnalyticsService {
     this.logger.log(`Backfill complete for ${startSuffix}..${end}`);
 
     return { startSuffix, endSuffix: end };
+  }
+
+  /**
+   * Rebuild the landing-page aggregate in BigQuery, then stream it into Postgres.
+   *
+   * Unlike `utm_daily_metrics` — which is maintained by a BigQuery scheduled
+   * query that lives outside this repo — this table is built here, so the SQL
+   * that defines it is version-controlled alongside the code that reads it.
+   *
+   * Scans ~1.25 GB per day of range (~$0.008/day at on-demand pricing), so the
+   * default 3-day window is intentional. Widen it only for a deliberate backfill.
+   */
+  async buildPageMetrics(days = 3) {
+    const end = format(subDays(new Date(), 1), 'yyyyMMdd');
+    const start = format(subDays(new Date(), days), 'yyyyMMdd');
+
+    if (!/^\d{8}$/.test(start) || !/^\d{8}$/.test(end)) {
+      throw new Error(`Invalid date suffix: start=${start} end=${end}`);
+    }
+
+    const ds = AnalyticsService.BQ_DATASET;
+    const sourceFilter = buildPlatformSourceSqlBQ('src');
+
+    const sql = `
+      CREATE OR REPLACE TABLE \`${ds}.utm_page_daily_metrics\` AS
+      WITH ev AS (
+        SELECT
+          user_pseudo_id,
+          event_timestamp,
+          event_name,
+          event_date,
+          (SELECT value.int_value    FROM UNNEST(event_params) WHERE key = 'ga_session_id') AS ses,
+          (SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'page_location') AS page_location,
+          (SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'source')        AS src
+        FROM \`${ds}.events_2*\`
+        WHERE event_name IN ('page_view', 'session_start')
+          AND CONCAT('2', _TABLE_SUFFIX) BETWEEN '${start}' AND '${end}'
+      ),
+      sess AS (
+        SELECT
+          CONCAT(user_pseudo_id, '-', CAST(ses AS STRING)) AS session_id,
+          -- Landing page and source are taken from the session's earliest event,
+          -- so a session is credited to the page it actually entered on.
+          ARRAY_AGG(page_location IGNORE NULLS ORDER BY event_timestamp LIMIT 1)[SAFE_OFFSET(0)] AS landing,
+          ARRAY_AGG(src           IGNORE NULLS ORDER BY event_timestamp LIMIT 1)[SAFE_OFFSET(0)] AS src,
+          -- event_date (property timezone) keeps this consistent with traffic_daily,
+          -- rather than deriving a UTC date from the timestamp.
+          ARRAY_AGG(event_date    IGNORE NULLS ORDER BY event_timestamp LIMIT 1)[SAFE_OFFSET(0)] AS event_date,
+          COUNTIF(event_name = 'page_view') AS pageviews,
+          ANY_VALUE(user_pseudo_id) AS user_pseudo_id
+        FROM ev
+        WHERE ses IS NOT NULL
+        GROUP BY 1
+      )
+      SELECT
+        PARSE_DATE('%Y%m%d', event_date) AS date,
+        LOWER(src) AS utm_source,
+        REGEXP_EXTRACT(landing, r'https?://[^/]+(/[^?#]*)') AS page_path,
+        COUNT(*) AS sessions,
+        SUM(pageviews) AS pageviews,
+        COUNT(DISTINCT user_pseudo_id) AS users
+      FROM sess
+      WHERE landing IS NOT NULL
+        AND event_date IS NOT NULL
+        AND ${sourceFilter}
+      GROUP BY 1, 2, 3;
+    `;
+
+    await this.bq.query(sql);
+    this.logger.log(`Page metrics rebuilt in BQ for ${start}..${end}`);
+    return { start, end };
+  }
+
+  /** Stream `utm_page_daily_metrics` into Postgres. Idempotent via dimensionHash. */
+  async syncPageMetrics() {
+    const query = `
+      SELECT date, utm_source, page_path, sessions, pageviews, users
+      FROM \`${AnalyticsService.BQ_DATASET}.utm_page_daily_metrics\`
+    `;
+
+    const stream = await this.bq.queryStream(query);
+    const pageMap = new Map<string, any>();
+
+    for await (const row of stream) {
+      const date = row.date?.value || row.date;
+      const utmSource = row.utm_source || '(direct)';
+      const pagePath = row.page_path || '/';
+      if (!date) continue;
+
+      const rawKey = `${date}|${utmSource}|${pagePath}`;
+      const dimensionHash = crypto
+        .createHash('md5')
+        .update(rawKey)
+        .digest('hex');
+
+      const existing = pageMap.get(dimensionHash);
+      if (existing) {
+        existing.sessions += Number(row.sessions) || 0;
+        existing.pageviews += Number(row.pageviews) || 0;
+        existing.users += Number(row.users) || 0;
+      } else {
+        pageMap.set(dimensionHash, {
+          dimensionHash,
+          date,
+          utmSource,
+          pagePath,
+          sessions: Number(row.sessions) || 0,
+          pageviews: Number(row.pageviews) || 0,
+          users: Number(row.users) || 0,
+        });
+      }
+    }
+
+    const rows = Array.from(pageMap.values());
+    const CHUNK = 1000;
+    for (let i = 0; i < rows.length; i += CHUNK) {
+      await this.pageRepo.upsert(rows.slice(i, i + CHUNK), ['dimensionHash']);
+    }
+
+    this.logger.log(`Upserted ${rows.length} landing-page records.`);
+    return rows.length;
+  }
+
+  /** Rebuild + sync in one step. Used by the daily cron and the manual trigger. */
+  async refreshPageMetrics(days = 3) {
+    const range = await this.buildPageMetrics(days);
+    const count = await this.syncPageMetrics();
+    return { ...range, count };
   }
 
   async syncBigQueryData(fullSync: boolean = true) {

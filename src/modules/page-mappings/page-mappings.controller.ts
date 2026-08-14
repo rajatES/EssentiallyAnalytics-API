@@ -14,6 +14,7 @@ import {
 import { FileInterceptor } from '@nestjs/platform-express';
 import { PageMappingsService } from './page-mappings.service';
 import { PageMapping } from './entities/page-mapping.entity';
+import { PagePathMapping } from './entities/page-path-mapping.entity';
 
 @Controller('page-mappings')
 export class PageMappingsController {
@@ -51,6 +52,47 @@ export class PageMappingsController {
       await this.service.updateTeamByPageName(first.pageName, team);
     }
     return this.service.findAll();
+  }
+
+  /**
+   * Landing-page (URL pattern) mappings.
+   *
+   * Declared before the ':id' routes so "paths" isn't parsed as a numeric id.
+   */
+  @Get('paths')
+  findAllPaths() {
+    return this.service.findAllPaths();
+  }
+
+  @Post('paths')
+  async createPath(@Body() mapping: Partial<PagePathMapping>) {
+    try {
+      return await this.service.createPath(mapping);
+    } catch (error) {
+      throw new HttpException(
+        error instanceof Error ? error.message : 'Failed to create mapping',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+  }
+
+  @Patch('paths/batch/team')
+  batchUpdatePathTeam(@Body() body: { ids: number[]; team: string | null }) {
+    const ids = Array.isArray(body?.ids) ? body.ids : [];
+    return this.service.updatePathTeams(ids, body?.team ?? null);
+  }
+
+  @Patch('paths/:id')
+  updatePath(
+    @Param('id') id: string,
+    @Body() mapping: Partial<PagePathMapping>,
+  ) {
+    return this.service.updatePath(+id, mapping);
+  }
+
+  @Delete('paths/:id')
+  removePath(@Param('id') id: string) {
+    return this.service.removePath(+id);
   }
 
   @Delete(':id')
