@@ -6,15 +6,19 @@ import {
   Delete,
   Body,
   Param,
+  Req,
   UseInterceptors,
   UploadedFile,
+  ForbiddenException,
   HttpException,
   HttpStatus,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
+import type { Request } from 'express';
 import { PageMappingsService } from './page-mappings.service';
 import { PageMapping } from './entities/page-mapping.entity';
 import { PagePathMapping } from './entities/page-path-mapping.entity';
+import { User, UserRole } from '../auth/entities/user.entity';
 
 @Controller('page-mappings')
 export class PageMappingsController {
@@ -93,6 +97,22 @@ export class PageMappingsController {
   @Delete('paths/:id')
   removePath(@Param('id') id: string) {
     return this.service.removePath(+id);
+  }
+
+  /**
+   * Wipe every UTM mapping. Admin-only, and enforced here rather than in the
+   * UI alone: the global ApiKeyGuard authenticates but does not authorise, so
+   * without this check any logged-in user could clear the table by hand.
+   *
+   * Declared before ':id' so an empty path segment can never fall through to
+   * the single-row delete.
+   */
+  @Delete()
+  removeAll(@Req() req: Request & { user?: User }) {
+    if (req.user?.role !== UserRole.ADMIN) {
+      throw new ForbiddenException('Only admins can delete all page mappings');
+    }
+    return this.service.removeAll();
   }
 
   @Delete(':id')

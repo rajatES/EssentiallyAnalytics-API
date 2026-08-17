@@ -147,6 +147,20 @@ export class PageMappingsService {
     return { deleted: true };
   }
 
+  /**
+   * Wipe every UTM mapping row. Uses the query builder because TypeORM's
+   * `delete({})` rejects empty criteria, and `clear()` issues a TRUNCATE that
+   * reports no row count.
+   */
+  async removeAll() {
+    const result = await this.mappingRepository
+      .createQueryBuilder()
+      .delete()
+      .from(PageMapping)
+      .execute();
+    return { deleted: result.affected ?? 0 };
+  }
+
   async importFromCSV(fileBuffer: Buffer) {
     const fileStream = Readable.from(fileBuffer);
     const rl = readline.createInterface({
