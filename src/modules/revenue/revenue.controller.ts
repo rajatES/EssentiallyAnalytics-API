@@ -13,6 +13,11 @@ export class RevenueController {
     return this.revenueService.getAggregatedMetrics(startDate, endDate);
   }
 
+  @Get('headlines')
+  async getHeadlines() {
+    return this.revenueService.getHeadlineWindows();
+  }
+
   @Get('mappings')
   async getMappings() {
     return this.revenueService.getMappings();

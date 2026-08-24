@@ -18,6 +18,11 @@ import {
 } from '../services/meta.service';
 import { DailyRevenue } from '../../revenue/entities/daily-revenue.entity';
 import { CronService } from '../services/cron.service';
+import {
+  buildHeadlineWindows,
+  windowResult,
+  type HeadlineWindow,
+} from '../../../common/headline-windows';
 
 /** Safety cap for profileIds arrays to avoid unbounded IN clauses */
 const MAX_PROFILE_IDS = 50;
@@ -1049,6 +1054,115 @@ export class AnalyticsController {
    * PER-PAGE aggregate: returns one row per profileId with the same metrics
    * as the main /aggregate endpoint, but broken down per page.
    */
+  /**
+   * MTD / DOD / WOW headline windows for the selected profiles.
+   *
+   * Impressions follow the same formula as the rest of the reports page:
+   * page-level reach or impressions (whichever is higher) for Facebook, plus
+   * post views and reach for Instagram, whose page snapshots carry neither.
+   */
+  @Post('aggregate/headlines')
+  async getHeadlineWindows(
+    @Body() body: { profileIds: string[] },
+    @Res() res: Response,
+  ) {
+    try {
+      const profileIds = (body.profileIds || []).slice(0, MAX_PROFILE_IDS);
+      if (profileIds.length === 0)
+        return res
+          .status(200)
+          .json({ anchorDate: null, mtd: null, dod: null, wow: null });
+
+      // Anchor on the newest synced day rather than yesterday: Meta insights
+      // land a day or more late, so yesterday is regularly still empty.
+      const anchorRow = await this.snapshotRepo
+        .createQueryBuilder('s')
+        .select(`MAX(TO_CHAR(s.date, 'YYYY-MM-DD'))`, 'latest')
+        .where('s."profileId" IN (:...ids)', { ids: profileIds })
+        // A snapshot row can exist before its insights land, so an all-zero
+        // day must not win the anchor and read as a 100% drop.
+        .andWhere('GREATEST(s."totalImpressions", s."totalReach") > 0')
+        .getRawOne<{ latest: string | null }>();
+
+      const windows = buildHeadlineWindows(
+        anchorRow?.latest ||
+          new Date(Date.now() - 86400000).toISOString().slice(0, 10),
+      );
+
+      // Snapshots key off a date column, posts off a timestamp — so each window
+      // contributes both a plain date pair and an IST day-boundary pair, which
+      // keeps the postedAt comparison off a cast and on the index.
+      const named = [
+        ['dod', windows.dod],
+        ['wow', windows.wow],
+        ['mtd', windows.mtd],
+      ] as const;
+
+      const dayStart = (d: string) => new Date(`${d}T00:00:00.000+05:30`);
+      const dayEnd = (d: string) => new Date(`${d}T23:59:59.999+05:30`);
+
+      const params: Record<string, string | Date> = {
+        earliest: windows.earliest,
+        latest: windows.anchor,
+        earliestTs: dayStart(windows.earliest),
+        latestTs: dayEnd(windows.anchor),
+      };
+      for (const [name, w] of named) {
+        params[`${name}Start`] = w.start;
+        params[`${name}End`] = w.end;
+        params[`${name}PrevStart`] = w.prevStart;
+        params[`${name}PrevEnd`] = w.prevEnd;
+        params[`${name}StartTs`] = dayStart(w.start);
+        params[`${name}EndTs`] = dayEnd(w.end);
+        params[`${name}PrevStartTs`] = dayStart(w.prevStart);
+        params[`${name}PrevEndTs`] = dayEnd(w.prevEnd);
+      }
+
+      const snapSpan = (name: string) => [
+        `COALESCE(SUM(CASE WHEN s.date >= :${name}Start AND s.date <= :${name}End THEN GREATEST(s."totalImpressions", s."totalReach") ELSE 0 END), 0) as ${name}_value`,
+        `COALESCE(SUM(CASE WHEN s.date >= :${name}PrevStart AND s.date <= :${name}PrevEnd THEN GREATEST(s."totalImpressions", s."totalReach") ELSE 0 END), 0) as ${name}_prev`,
+      ];
+
+      const snapRow = await this.snapshotRepo
+        .createQueryBuilder('s')
+        .select([...snapSpan('dod'), ...snapSpan('wow'), ...snapSpan('mtd')])
+        .where('s."profileId" IN (:...ids)', { ids: profileIds })
+        .andWhere('s.date >= :earliest AND s.date <= :latest')
+        .setParameters(params)
+        .getRawOne<Record<string, string>>();
+
+      const postSpan = (name: string) => [
+        `COALESCE(SUM(CASE WHEN p."postedAt" >= :${name}StartTs AND p."postedAt" <= :${name}EndTs THEN p.views + p.reach ELSE 0 END), 0) as ${name}_value`,
+        `COALESCE(SUM(CASE WHEN p."postedAt" >= :${name}PrevStartTs AND p."postedAt" <= :${name}PrevEndTs THEN p.views + p.reach ELSE 0 END), 0) as ${name}_prev`,
+      ];
+
+      const postRow = await this.postRepo
+        .createQueryBuilder('p')
+        .select([...postSpan('dod'), ...postSpan('wow'), ...postSpan('mtd')])
+        .where('p."profileId" IN (:...ids)', { ids: profileIds })
+        .andWhere(`p.platform = 'instagram'`)
+        .andWhere('p."postedAt" >= :earliestTs AND p."postedAt" <= :latestTs')
+        .setParameters(params)
+        .getRawOne<Record<string, string>>();
+
+      const sum = (key: string) =>
+        Number(snapRow?.[key] || 0) + Number(postRow?.[key] || 0);
+
+      const build = (name: 'mtd' | 'dod' | 'wow', window: HeadlineWindow) =>
+        windowResult(window, sum(`${name}_value`), sum(`${name}_prev`));
+
+      return res.status(200).json({
+        anchorDate: windows.anchor,
+        metric: 'impressions',
+        mtd: build('mtd', windows.mtd),
+        dod: build('dod', windows.dod),
+        wow: build('wow', windows.wow),
+      });
+    } catch (error: any) {
+      return res.status(500).json({ error: error.message });
+    }
+  }
+
   @Post('aggregate/per-page')
   async getPerPageAggregatedData(
     @Body()

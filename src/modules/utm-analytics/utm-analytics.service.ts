@@ -17,6 +17,10 @@ import {
 import { TrafficDaily } from './entities/traffic-daily.entity';
 import { TrafficCountryDaily } from './entities/traffic-country-daily.entity';
 import { subDays, format } from 'date-fns';
+import {
+  buildHeadlineWindows,
+  windowResult,
+} from '../../common/headline-windows';
 import * as readline from 'readline';
 import * as crypto from 'crypto';
 import { Readable } from 'stream';
@@ -176,63 +180,86 @@ export class AnalyticsService {
   }
 
   async getHeadlines(filters: { utmSource?: string | string[] } = {}) {
-    const today = new Date();
-    const yesterday = subDays(today, 1);
-    const dayBeforeYesterday = subDays(today, 2);
+    // Anchor on the newest day that has traffic, not on yesterday: the
+    // BigQuery sync runs on a lag, and an unsynced yesterday would report
+    // every headline as down 100%.
+    const anchorQb = this.trafficRepo.createQueryBuilder('a');
+    anchorQb.select(`MAX(TO_CHAR(a.date, 'YYYY-MM-DD'))`, 'latest');
+    anchorQb.where('a.sessions > 0');
+    this.applyFilter(anchorQb, 'utmSource', filters.utmSource);
+    const anchorRow = await anchorQb.getRawOne<{ latest: string | null }>();
 
-    const yesterdayStr = format(yesterday, 'yyyy-MM-dd');
-    const dayBeforeStr = format(dayBeforeYesterday, 'yyyy-MM-dd');
-    const last7Start = format(subDays(today, 7), 'yyyy-MM-dd');
-    const last7End = format(yesterday, 'yyyy-MM-dd');
-    const prev7Start = format(subDays(today, 14), 'yyyy-MM-dd');
-    const prev7End = format(subDays(today, 8), 'yyyy-MM-dd');
+    const windows = buildHeadlineWindows(
+      anchorRow?.latest || format(subDays(new Date(), 1), 'yyyy-MM-dd'),
+    );
 
     const qb = this.trafficRepo.createQueryBuilder('a');
     qb.where('a.date >= :earliest AND a.date <= :latest', {
-      earliest: prev7Start,
-      latest: yesterdayStr,
+      earliest: windows.earliest,
+      latest: windows.anchor,
     });
     this.applyFilter(qb, 'utmSource', filters.utmSource);
 
-    qb.select([
-      `SUM(CASE WHEN a.date = :yesterdayStr THEN a.sessions ELSE 0 END) as today_sessions`,
-      `SUM(CASE WHEN a.date = :dayBeforeStr THEN a.sessions ELSE 0 END) as yesterday_sessions`,
-      `SUM(CASE WHEN a.date = :yesterdayStr THEN a.users ELSE 0 END) as today_users`,
-      `SUM(CASE WHEN a.date = :dayBeforeStr THEN a.users ELSE 0 END) as yesterday_users`,
-      `SUM(CASE WHEN a.date >= :last7Start AND a.date <= :last7End THEN a.sessions ELSE 0 END) as this_week_sessions`,
-      `SUM(CASE WHEN a.date >= :prev7Start AND a.date <= :prev7End THEN a.sessions ELSE 0 END) as last_week_sessions`,
-      `SUM(CASE WHEN a.date >= :last7Start AND a.date <= :last7End THEN a.users ELSE 0 END) as this_week_users`,
-      `SUM(CASE WHEN a.date >= :prev7Start AND a.date <= :prev7End THEN a.users ELSE 0 END) as last_week_users`,
-    ]);
+    // One scan, six windowed sums: every chip reads from the same rows.
+    const span = (name: string) => [
+      `SUM(CASE WHEN a.date >= :${name}Start AND a.date <= :${name}End THEN a.sessions ELSE 0 END) as ${name}_sessions`,
+      `SUM(CASE WHEN a.date >= :${name}PrevStart AND a.date <= :${name}PrevEnd THEN a.sessions ELSE 0 END) as ${name}_prev_sessions`,
+    ];
+
+    qb.select([...span('dod'), ...span('wow'), ...span('mtd')]);
+
     qb.setParameters({
-      yesterdayStr,
-      dayBeforeStr,
-      last7Start,
-      last7End,
-      prev7Start,
-      prev7End,
+      dodStart: windows.dod.start,
+      dodEnd: windows.dod.end,
+      dodPrevStart: windows.dod.prevStart,
+      dodPrevEnd: windows.dod.prevEnd,
+      wowStart: windows.wow.start,
+      wowEnd: windows.wow.end,
+      wowPrevStart: windows.wow.prevStart,
+      wowPrevEnd: windows.wow.prevEnd,
+      mtdStart: windows.mtd.start,
+      mtdEnd: windows.mtd.end,
+      mtdPrevStart: windows.mtd.prevStart,
+      mtdPrevEnd: windows.mtd.prevEnd,
     });
 
-    const row = await qb.getRawOne();
+    const row = await qb.getRawOne<Record<string, string>>();
+    const num = (key: string) => Number(row?.[key] || 0);
+
+    const mtd = windowResult(
+      windows.mtd,
+      num('mtd_sessions'),
+      num('mtd_prev_sessions'),
+    );
+    const dod = windowResult(
+      windows.dod,
+      num('dod_sessions'),
+      num('dod_prev_sessions'),
+    );
+    const wow = windowResult(
+      windows.wow,
+      num('wow_sessions'),
+      num('wow_prev_sessions'),
+    );
 
     return {
+      anchorDate: windows.anchor,
+      mtd,
+      dod,
+      wow,
+      // daily/weekly predate the windows above and are what the dashboard
+      // cards read — kept as aliases so both views stay in step.
       daily: {
-        date: yesterdayStr,
-        sessions: Number(row?.today_sessions || 0),
-        prevSessions: Number(row?.yesterday_sessions || 0),
-        diff: this.calculatePercentDiff(
-          row?.today_sessions,
-          row?.yesterday_sessions,
-        ),
+        date: dod.end,
+        sessions: dod.value,
+        prevSessions: dod.prevValue,
+        diff: dod.diff ?? 0,
       },
       weekly: {
-        range: `${last7Start} to ${last7End}`,
-        sessions: Number(row?.this_week_sessions || 0),
-        prevSessions: Number(row?.last_week_sessions || 0),
-        diff: this.calculatePercentDiff(
-          row?.this_week_sessions,
-          row?.last_week_sessions,
-        ),
+        range: `${wow.start} to ${wow.end}`,
+        sessions: wow.value,
+        prevSessions: wow.prevValue,
+        diff: wow.diff ?? 0,
       },
     };
   }
