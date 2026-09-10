@@ -15,6 +15,7 @@ import { EmailReportsModule } from './modules/email-reports/email-reports.module
 import { ReportSportsMappingsModule } from './modules/report-sports-mappings/report-sports-mappings.module';
 import { CommentLinksModule } from './modules/comment-links/comment-links.module';
 import { MsnProductionModule } from './modules/msn-production/msn-production.module';
+import { RiskModule } from './modules/risk/risk.module';
 
 @Module({
   imports: [
@@ -58,6 +59,7 @@ import { MsnProductionModule } from './modules/msn-production/msn-production.mod
     ReportSportsMappingsModule,
     CommentLinksModule,
     MsnProductionModule,
+    RiskModule,
   ],
   controllers: [],
   providers: [

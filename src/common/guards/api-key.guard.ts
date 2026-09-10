@@ -29,7 +29,15 @@ export class ApiKeyGuard implements CanActivate {
       return true;
     }
     const request = context.switchToHttp().getRequest<Request>();
-    const apiKey = request.cookies?.['auth_token'];
+
+    // Browser callers present the cookie the login flow set. Server-to-server
+    // callers (the weekly risk routine) hold no cookie jar, so the same key is
+    // also accepted as a header. Both resolve to the same `users.apiKey`
+    // lookup below, so this widens how the key arrives, not who may use it.
+    const headerKey = request.headers['x-api-key'];
+    const apiKey =
+      request.cookies?.['auth_token'] ??
+      (Array.isArray(headerKey) ? headerKey[0] : headerKey);
 
     if (!apiKey) {
       throw new UnauthorizedException('Authentication token is missing');
