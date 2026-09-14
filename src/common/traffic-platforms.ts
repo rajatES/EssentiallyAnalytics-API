@@ -185,3 +185,64 @@ export function buildPlatformSourceSqlBQ(
 
   return `(${clauses.join(' OR ')})`;
 }
+
+/**
+ * Which platform a raw `utm_source` value belongs to, or undefined for
+ * anything outside the registry.
+ *
+ * The JS mirror of buildPlatformSourceFilter's matching rules. It exists so a
+ * caller can group a query by utm_source ONCE and bucket the rows by platform
+ * afterwards, instead of running the same query three times with three
+ * different source filters. Keep the two in step: a rule added above must be
+ * handled here or a source will pass the SQL filter and then fall out of every
+ * bucket.
+ */
+export function platformForSource(
+  source: string | null | undefined,
+): TrafficPlatformDef | undefined {
+  if (!source) return undefined;
+  const s = source.trim().toLowerCase();
+  if (!s) return undefined;
+
+  return TRAFFIC_PLATFORMS.find(
+    (p) =>
+      p.exact.some((e) => e.toLowerCase() === s) ||
+      p.domains.some(
+        (d) => s === d.toLowerCase() || s.endsWith(`.${d.toLowerCase()}`),
+      ) ||
+      p.prefixes.some((pre) => s.startsWith(pre.toLowerCase())),
+  );
+}
+
+/**
+ * The source filter for "social traffic", as one parenthesised OR-group.
+ *
+ * Pass a platform to narrow to that one; pass nothing for every platform in the
+ * registry. This is the only filter the MCP-facing endpoints use, which is what
+ * makes "social traffic and nothing else" a property of the code rather than of
+ * whoever wrote the query — there is no call path in that controller that omits
+ * it.
+ */
+export function buildSocialSourceFilter(
+  platform?: TrafficPlatformDef,
+  alias = 'a',
+  column = 'utmSource',
+  paramPrefix = 'social',
+): { sql: string; params: Record<string, any> } {
+  const targets = platform ? [platform] : TRAFFIC_PLATFORMS;
+  const parts: string[] = [];
+  const params: Record<string, any> = {};
+
+  targets.forEach((p) => {
+    const built = buildPlatformSourceFilter(
+      p,
+      alias,
+      column,
+      `${paramPrefix}_${p.key}`,
+    );
+    parts.push(built.sql);
+    Object.assign(params, built.params);
+  });
+
+  return { sql: `(${parts.join(' OR ')})`, params };
+}

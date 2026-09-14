@@ -17,6 +17,7 @@ import { CommentLinksModule } from './modules/comment-links/comment-links.module
 import { MsnProductionModule } from './modules/msn-production/msn-production.module';
 import { RiskModule } from './modules/risk/risk.module';
 import { CriticalFlowModule } from './modules/critical-flow/critical-flow.module';
+import { McpSocialModule } from './modules/mcp-social/mcp-social.module';
 
 @Module({
   imports: [
@@ -62,6 +63,7 @@ import { CriticalFlowModule } from './modules/critical-flow/critical-flow.module
     MsnProductionModule,
     RiskModule,
     CriticalFlowModule,
+    McpSocialModule,
   ],
   controllers: [],
   providers: [
