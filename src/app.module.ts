@@ -16,6 +16,7 @@ import { ReportSportsMappingsModule } from './modules/report-sports-mappings/rep
 import { CommentLinksModule } from './modules/comment-links/comment-links.module';
 import { MsnProductionModule } from './modules/msn-production/msn-production.module';
 import { RiskModule } from './modules/risk/risk.module';
+import { CriticalFlowModule } from './modules/critical-flow/critical-flow.module';
 
 @Module({
   imports: [
@@ -60,6 +61,7 @@ import { RiskModule } from './modules/risk/risk.module';
     CommentLinksModule,
     MsnProductionModule,
     RiskModule,
+    CriticalFlowModule,
   ],
   controllers: [],
   providers: [
