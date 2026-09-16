@@ -7,6 +7,7 @@ import {
   buildHeadlineWindows,
   windowResult,
 } from '../../common/headline-windows';
+import { normalizeExplicitUrl } from '../../common/page-links';
 
 @Injectable()
 export class RevenueService {
@@ -38,6 +39,20 @@ export class RevenueService {
         .execute();
     }
 
+    return this.getMappings();
+  }
+
+  /**
+   * Set (or clear) the click-through override for one page.
+   *
+   * Revenue pages link fine without this — `pageId` is a Meta Page ID — so the
+   * field only exists for the handful whose Page ID no longer resolves, e.g.
+   * after a page merge or a rename to a vanity URL.
+   */
+  async updateMappingUrl(id: number, pageUrl: string | null) {
+    await this.mappingRepo.update(id, {
+      pageUrl: normalizeExplicitUrl(pageUrl),
+    });
     return this.getMappings();
   }
 
@@ -105,6 +120,10 @@ export class RevenueService {
       .select([
         'dr.date AS "date"',
         'rm.pageName AS "pageName"',
+        // Carried through so the dashboard can link each page without a
+        // second round trip to the mappings endpoint.
+        'rm.pageId AS "pageId"',
+        'rm.pageUrl AS "pageUrl"',
         'rm.team AS "team"',
         'SUM(dr.bonusRevenue) AS "bonus"',
         'SUM(dr.photoRevenue) AS "photo"',
@@ -116,7 +135,7 @@ export class RevenueService {
       .innerJoin(RevenueMapping, 'rm', 'rm.pageId = dr.pageId')
       .where('dr.date >= :startDate', { startDate })
       .andWhere('dr.date <= :endDate', { endDate })
-      .groupBy('dr.date, rm.pageName, rm.team')
+      .groupBy('dr.date, rm.pageName, rm.pageId, rm.pageUrl, rm.team')
       .orderBy('dr.date', 'DESC')
       .getRawMany();
   }
