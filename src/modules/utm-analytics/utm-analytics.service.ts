@@ -44,7 +44,9 @@ export class AnalyticsService {
   private static readonly BQ_DATASET =
     'bigquerytest-486307.analytics_266571177';
 
-  // Groups by (date, utmMedium) only — keeps result set small vs the full granular query.
+  // Groups by (date, utmMedium, utmCampaign) — keeps the result set small vs the
+  // full granular query, while still carrying the campaign the page mappings
+  // need to tell a page's normal posts from its autoposted ones.
   async getAggregatedMetrics(startDate: string, endDate: string, filters: any) {
     const qb = this.trafficRepo.createQueryBuilder('a');
     qb.where('a.date >= :startDate AND a.date <= :endDate', {
@@ -59,6 +61,7 @@ export class AnalyticsService {
     qb.select([
       "TO_CHAR(a.date, 'YYYY-MM-DD') as event_day",
       'a.utmMedium as utm_medium',
+      'a.utmCampaign as utm_campaign',
       'SUM(a.sessions) as sessions',
       'SUM(a.pageviews) as pageviews',
       'SUM(a.users) as users',
@@ -71,6 +74,7 @@ export class AnalyticsService {
 
     qb.groupBy("TO_CHAR(a.date, 'YYYY-MM-DD')");
     qb.addGroupBy('a.utmMedium');
+    qb.addGroupBy('a.utmCampaign');
     qb.orderBy('event_day', 'ASC');
     qb.limit(50000);
 

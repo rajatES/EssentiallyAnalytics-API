@@ -661,6 +661,7 @@ export class RiskService {
         page_name: m.pageName,
         utm_source: m.utmSource,
         utm_mediums: m.utmMediums,
+        utm_campaign: m.utmCampaign,
       })),
       page_path_mappings: pathMappings.map((m) => ({
         id: m.id,

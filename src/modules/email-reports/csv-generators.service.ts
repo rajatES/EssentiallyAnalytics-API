@@ -3,6 +3,10 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, Between, In } from 'typeorm';
 import { TrafficDaily } from '../utm-analytics/entities/traffic-daily.entity';
 import { PageMapping } from '../page-mappings/entities/page-mapping.entity';
+import {
+  buildMappingIndex,
+  resolveMapping,
+} from '../../common/page-mapping-match';
 import { DailyRevenue } from '../revenue/entities/daily-revenue.entity';
 import { RevenueMapping } from '../revenue/entities/revenue-mapping.entity';
 import { AnalyticsSnapshot } from '../facebook/entities/AnalyticsSnapshot.entity';
@@ -58,6 +62,7 @@ export class CsvGeneratorService {
       .createQueryBuilder('a')
       .select([
         'a.utmMedium AS utm_medium',
+        'a.utmCampaign AS utm_campaign',
         `to_char(a.date::date, 'YYYY-MM-DD') AS date`,
         'SUM(a.sessions) AS sessions',
       ])
@@ -67,24 +72,13 @@ export class CsvGeneratorService {
       )
       .andWhere(fbSource.sql, fbSource.params)
       .groupBy('a.utmMedium')
+      .addGroupBy('a.utmCampaign')
       .addGroupBy('a.date')
       .getRawMany();
 
-    // Map UTM medium → { pageName, category, team, platform }
-    const mediumToPage = new Map<
-      string,
-      { pageName: string; category: string; team: string; platform: string }
-    >();
-    for (const mapping of mappings) {
-      for (const medium of mapping.utmMediums) {
-        mediumToPage.set(medium.toLowerCase(), {
-          pageName: mapping.pageName,
-          category: mapping.category,
-          team: mapping.team || 'Unassigned',
-          platform: mapping.platform || 'FB',
-        });
-      }
-    }
+    // Resolve (medium, campaign) → page through the shared matcher, so this CSV
+    // and the Traffic page can't drift apart the way they once did on sources.
+    const mappingIndex = buildMappingIndex(mappings);
 
     // Aggregate by pageName × date (multiple mediums can resolve to the same page)
     type PageBucket = {
@@ -97,8 +91,11 @@ export class CsvGeneratorService {
     const pageData = new Map<string, PageBucket>();
 
     for (const row of rows) {
-      const medium = (row.utm_medium || '').toLowerCase();
-      const info = mediumToPage.get(medium);
+      const info = resolveMapping(
+        mappingIndex,
+        row.utm_medium,
+        row.utm_campaign,
+      );
       const pageName = info?.pageName || row.utm_medium || 'Unknown';
 
       if (!pageData.has(pageName)) {

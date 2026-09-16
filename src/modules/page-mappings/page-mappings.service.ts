@@ -5,6 +5,7 @@ import { PageMapping } from './entities/page-mapping.entity';
 import { PagePathMapping } from './entities/page-path-mapping.entity';
 import { Readable } from 'stream';
 import { normalizeExplicitUrl } from '../../common/page-links';
+import { splitPastedMedium } from '../../common/page-mapping-match';
 import * as readline from 'readline';
 
 @Injectable()
@@ -97,9 +98,39 @@ export class PageMappingsService {
 
   create(mapping: Partial<PageMapping>) {
     const newMapping = this.mappingRepository.create(
-      this.normalizeUrl(mapping),
+      this.normalizeMediums(this.normalizeUrl(mapping)),
     );
     return this.mappingRepository.save(newMapping);
+  }
+
+  /**
+   * Accept whatever shape the person pasted into the mediums box.
+   *
+   * People paste the tail of a tracking link — 'x&utm_campaign=threads&
+   * utm_term=autopost' — or occasionally the whole link. Stored verbatim, that
+   * never matches a traffic row, because the warehouse holds just 'x'. So split
+   * it: the medium stays in utmMediums, and any campaign found is lifted onto
+   * utmCampaign (unless the caller set one explicitly).
+   */
+  private normalizeMediums(
+    partial: Partial<PageMapping>,
+  ): Partial<PageMapping> {
+    if (!Array.isArray(partial.utmMediums)) return partial;
+
+    let derivedCampaign: string | null = null;
+    const mediums = partial.utmMediums
+      .map((raw) => {
+        const { medium, campaign } = splitPastedMedium(String(raw ?? ''));
+        if (campaign && !derivedCampaign) derivedCampaign = campaign;
+        return medium;
+      })
+      .filter(Boolean);
+
+    const out: Partial<PageMapping> = { ...partial, utmMediums: mediums };
+    const explicit =
+      typeof out.utmCampaign === 'string' ? out.utmCampaign.trim() : null;
+    out.utmCampaign = explicit || derivedCampaign || null;
+    return out;
   }
 
   /**
@@ -123,7 +154,7 @@ export class PageMappingsService {
       const t = partial.team;
       partial.team = typeof t === 'string' && t.trim() ? t.trim() : null;
     }
-    partial = this.normalizeUrl(partial);
+    partial = this.normalizeMediums(this.normalizeUrl(partial));
     await this.mappingRepository.update(id, partial);
 
     // If team was changed, cascade to ALL rows with the same pageName so that
@@ -223,19 +254,17 @@ export class PageMappingsService {
         let cleanedMediumsStr = utmMediumsStr || '';
         cleanedMediumsStr = cleanedMediumsStr.replace(/^\{|\}$/g, '');
 
+        // A pasted medium can carry its own query-string tail
+        // ('x&utm_campaign=threads&utm_term=autopost'). Split it, keep the
+        // medium, and lift the campaign onto the row — that campaign is what
+        // separates a page's autoposted traffic from its normal posts.
+        let importedCampaign: string | null = null;
         const mediumsArray = cleanedMediumsStr
           .split(',')
           .map((m) => {
-            let trimmed = m.trim();
-
-            if (trimmed.includes('utm_medium=')) {
-              const paramString = trimmed.includes('?')
-                ? trimmed.substring(trimmed.indexOf('?'))
-                : trimmed;
-              const urlParams = new URLSearchParams(paramString);
-              trimmed = urlParams.get('utm_medium') || trimmed;
-            }
-            return trimmed;
+            const { medium, campaign } = splitPastedMedium(m);
+            if (campaign && !importedCampaign) importedCampaign = campaign;
+            return medium;
           })
           .filter(Boolean);
 
@@ -246,6 +275,7 @@ export class PageMappingsService {
           pageName: pageName?.trim(),
           utmSource: utmSource?.trim(),
           utmMediums: mediumsArray,
+          utmCampaign: importedCampaign,
           pageUrl: normalizeExplicitUrl(pageUrl),
         });
       }
