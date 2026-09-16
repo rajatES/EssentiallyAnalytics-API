@@ -4,6 +4,7 @@ import { Repository } from 'typeorm';
 import { PageMapping } from './entities/page-mapping.entity';
 import { PagePathMapping } from './entities/page-path-mapping.entity';
 import { Readable } from 'stream';
+import { normalizeExplicitUrl } from '../../common/page-links';
 import * as readline from 'readline';
 
 @Injectable()
@@ -95,8 +96,22 @@ export class PageMappingsService {
   }
 
   create(mapping: Partial<PageMapping>) {
-    const newMapping = this.mappingRepository.create(mapping);
+    const newMapping = this.mappingRepository.create(
+      this.normalizeUrl(mapping),
+    );
     return this.mappingRepository.save(newMapping);
+  }
+
+  /**
+   * Store the click-through override in a form a browser can open, or null.
+   *
+   * The value ends up in an href on three dashboards, so a non-http(s) URL is
+   * rejected at the boundary rather than trusted because it came from an
+   * authenticated editor.
+   */
+  private normalizeUrl(partial: Partial<PageMapping>): Partial<PageMapping> {
+    if (!('pageUrl' in partial)) return partial;
+    return { ...partial, pageUrl: normalizeExplicitUrl(partial.pageUrl) };
   }
 
   async update(id: number, partial: Partial<PageMapping>) {
@@ -108,6 +123,7 @@ export class PageMappingsService {
       const t = partial.team;
       partial.team = typeof t === 'string' && t.trim() ? t.trim() : null;
     }
+    partial = this.normalizeUrl(partial);
     await this.mappingRepository.update(id, partial);
 
     // If team was changed, cascade to ALL rows with the same pageName so that
@@ -182,24 +198,26 @@ export class PageMappingsService {
       const values = this.parseCSVLine(line);
 
       if (values.length >= 6) {
-        // Support both old format (no team) and new format (with team as 3rd col)
-        // Old: id, category, platform, pageName, utmSource, utmMediums
-        // New: id, category, team, platform, pageName, utmSource, utmMediums
+        // Three generations of the export are accepted, distinguished by width:
+        //   6 cols: id, category, platform, pageName, utmSource, utmMediums
+        //   7 cols: + team as the 3rd column
+        //   8 cols: + pageUrl last (the click-through override)
         let category: string,
           team: string | null,
           platform: string,
           pageName: string,
           utmSource: string,
-          utmMediumsStr: string;
+          utmMediumsStr: string,
+          pageUrl: string | null;
 
         if (values.length >= 7) {
-          // New format: team is 3rd column
           [, category, team, platform, pageName, utmSource, utmMediumsStr] =
             values;
+          pageUrl = values.length >= 8 ? values[7] : null;
         } else {
-          // Old format: no team column
           [, category, platform, pageName, utmSource, utmMediumsStr] = values;
           team = null;
+          pageUrl = null;
         }
 
         let cleanedMediumsStr = utmMediumsStr || '';
@@ -228,6 +246,7 @@ export class PageMappingsService {
           pageName: pageName?.trim(),
           utmSource: utmSource?.trim(),
           utmMediums: mediumsArray,
+          pageUrl: normalizeExplicitUrl(pageUrl),
         });
       }
     }

@@ -48,9 +48,54 @@ export class AnalyticsController {
   async getConnectedProfiles(@Res() res: Response) {
     const profiles = await this.profileRepo.find({
       where: { isActive: true },
-      select: ['profileId', 'name', 'platform', 'syncState', 'lastSyncError'],
+      select: [
+        'profileId',
+        'name',
+        'username',
+        'platform',
+        'syncState',
+        'lastSyncError',
+      ],
     });
     return res.status(200).json(profiles);
+  }
+
+  /**
+   * Backfill `username` for profiles connected before the column existed.
+   *
+   * Instagram names stay unlinkable until this runs, and the alternative ways
+   * to populate it — reconnecting through OAuth, or a full historical resync —
+   * are both far heavier than one basics call per profile.
+   */
+  @Post('profiles/refresh-usernames')
+  async refreshUsernames(@Res() res: Response) {
+    const profiles = await this.profileRepo.find({ where: { isActive: true } });
+
+    let updated = 0;
+    const failed: string[] = [];
+
+    for (const profile of profiles) {
+      const basics = await fetchProfileBasics(
+        profile.profileId,
+        profile.accessToken,
+        profile.platform as any,
+      );
+      if (!basics) {
+        failed.push(profile.name);
+        continue;
+      }
+      if (basics.username && basics.username !== profile.username) {
+        await this.profileRepo.update(
+          { profileId: profile.profileId },
+          { username: basics.username },
+        );
+        updated += 1;
+      }
+    }
+
+    return res
+      .status(200)
+      .json({ checked: profiles.length, updated, failed });
   }
 
   @Post('sync')

@@ -18,6 +18,7 @@ import { MsnProductionModule } from './modules/msn-production/msn-production.mod
 import { RiskModule } from './modules/risk/risk.module';
 import { CriticalFlowModule } from './modules/critical-flow/critical-flow.module';
 import { McpSocialModule } from './modules/mcp-social/mcp-social.module';
+import { PageDirectoryModule } from './modules/page-directory/page-directory.module';
 
 @Module({
   imports: [
@@ -64,6 +65,7 @@ import { McpSocialModule } from './modules/mcp-social/mcp-social.module';
     RiskModule,
     CriticalFlowModule,
     McpSocialModule,
+    PageDirectoryModule,
   ],
   controllers: [],
   providers: [

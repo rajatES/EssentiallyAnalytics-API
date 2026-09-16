@@ -20,6 +20,10 @@ export class RevenueMapping {
   @Column({ nullable: true })
   team: string; // e.g., "Design Team"
 
+  /** Optional override; without it the link is derived from `pageId`. */
+  @Column({ type: 'text', nullable: true })
+  pageUrl: string | null;
+
   @CreateDateColumn()
   createdAt: Date;
 

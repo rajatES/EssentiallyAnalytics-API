@@ -44,8 +44,14 @@ export class RevenueController {
   @Patch('mappings/:id')
   async updateMapping(
     @Param('id') id: string,
-    @Body() body: { team: string | null },
+    @Body() body: { team?: string | null; pageUrl?: string | null },
   ) {
-    return this.revenueService.updateMappingTeam(Number(id), body.team);
+    if ('pageUrl' in body) {
+      return this.revenueService.updateMappingUrl(
+        Number(id),
+        body.pageUrl ?? null,
+      );
+    }
+    return this.revenueService.updateMappingTeam(Number(id), body.team ?? null);
   }
 }

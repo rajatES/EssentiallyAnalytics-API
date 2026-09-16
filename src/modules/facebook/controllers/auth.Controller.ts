@@ -80,6 +80,10 @@ export class AuthController {
         profilePayloads.push({
           profileId: ig.id,
           name: ig.name,
+          // The only identifier that resolves as an instagram.com URL — the
+          // account id in `profileId` does not. Captured here because this is
+          // the one place Meta hands it to us for free.
+          username: ig.username ?? null,
           platform: 'instagram',
           accessToken: ig.access_token,
           isActive: true,

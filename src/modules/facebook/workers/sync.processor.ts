@@ -40,6 +40,17 @@ export class SyncProcessor {
   }
 
   /**
+   * Keep the account's vanity handle current from the basics call each sync
+   * already makes. It costs nothing extra here and is what makes an Instagram
+   * profile clickable — see common/page-links.ts.
+   */
+  private async persistUsername(profile: SocialProfile, basics: any) {
+    const username = basics?.username;
+    if (!username || username === profile.username) return;
+    await this.profileRepo.update({ profileId: profile.profileId }, { username });
+  }
+
+  /**
    * Re-sync data for a specific date range.
    * Same upsert-override logic as the daily cron — no data is deleted,
    * fresh values from Meta simply overwrite existing rows.
@@ -69,6 +80,7 @@ export class SyncProcessor {
         profile.accessToken,
         profile.platform as any,
       );
+      await this.persistUsername(profile, basics);
 
       const start = new Date(`${startDate}T00:00:00.000+05:30`);
       const end = new Date(`${endDate}T23:59:59.999+05:30`);
@@ -506,6 +518,7 @@ export class SyncProcessor {
         profile.accessToken,
         profile.platform as any,
       );
+      await this.persistUsername(profile, basics);
 
       const end = new Date();
       const start = new Date();
