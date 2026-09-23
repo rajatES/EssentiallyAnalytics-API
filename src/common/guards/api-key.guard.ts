@@ -2,14 +2,17 @@ import {
   Injectable,
   CanActivate,
   ExecutionContext,
+  ForbiddenException,
   UnauthorizedException,
 } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Request } from 'express';
-import { User } from '../../modules/auth/entities/user.entity';
+import { User, UserRole } from '../../modules/auth/entities/user.entity';
+import { hasRole } from '../../modules/auth/roles';
 import { IS_PUBLIC_KEY } from '../decorators/public.decorator';
+import { MIN_ROLE_KEY } from '../decorators/min-role.decorator';
 
 @Injectable()
 export class ApiKeyGuard implements CanActivate {
@@ -52,6 +55,14 @@ export class ApiKeyGuard implements CanActivate {
     }
 
     request['user'] = user;
+
+    const minRole = this.reflector.getAllAndOverride<UserRole | undefined>(MIN_ROLE_KEY, [
+      context.getHandler(),
+      context.getClass(),
+    ]);
+    if (minRole && !hasRole(user.role, minRole)) {
+      throw new ForbiddenException('Your access level does not allow this action');
+    }
     return true;
   }
 }

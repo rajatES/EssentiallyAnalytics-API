@@ -2,45 +2,20 @@ import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Cron } from '@nestjs/schedule';
-import * as nodemailer from 'nodemailer';
 import { ReportRecipient } from './entities/report-recipient.entity';
 import { CsvGeneratorService } from './csv-generators.service';
+import { MailService } from '../../common/mail/mail.service';
 
 @Injectable()
 export class EmailReportsService {
   private readonly logger = new Logger(EmailReportsService.name);
-  private transporter: nodemailer.Transporter | null = null;
 
   constructor(
     @InjectRepository(ReportRecipient)
     private readonly recipientRepo: Repository<ReportRecipient>,
     private readonly csvGenerator: CsvGeneratorService,
-  ) {
-    this.initTransporter();
-  }
-
-  private initTransporter() {
-    const host = process.env.SMTP_HOST;
-    const port = parseInt(process.env.SMTP_PORT || '587', 10);
-    const user = process.env.SMTP_USER;
-    const pass = process.env.SMTP_PASS;
-
-    if (!host || !user || !pass) {
-      this.logger.warn(
-        'SMTP not configured — emails will be disabled. Set SMTP_HOST, SMTP_USER, SMTP_PASS.',
-      );
-      return;
-    }
-
-    this.transporter = nodemailer.createTransport({
-      host,
-      port,
-      secure: port === 465,
-      auth: { user, pass },
-    });
-
-    this.logger.log(`SMTP transporter initialized: ${host}:${port}`);
-  }
+    private readonly mail: MailService,
+  ) {}
 
   async listRecipients(): Promise<ReportRecipient[]> {
     return this.recipientRepo.find({ order: { createdAt: 'ASC' } });
@@ -85,7 +60,7 @@ export class EmailReportsService {
     startDate: string,
     endDate: string,
   ): Promise<{ success: boolean; message: string }> {
-    if (!this.transporter) {
+    if (!this.mail.isConfigured()) {
       const msg =
         'SMTP not configured. Set SMTP_HOST, SMTP_USER, SMTP_PASS in .env';
       this.logger.warn(msg);
@@ -134,13 +109,7 @@ export class EmailReportsService {
         },
       ];
 
-      const fromAddr =
-        process.env.SMTP_FROM ||
-        process.env.SMTP_USER ||
-        'reports@studio.local';
-
-      await this.transporter.sendMail({
-        from: fromAddr,
+      await this.mail.send({
         to: toList,
         subject: `📊 ${typeLabel} Report — ${dateLabel} | ES Studio`,
         html: this.buildEmailHtml(

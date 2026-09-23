@@ -17,6 +17,9 @@ import { CommentLinksModule } from './modules/comment-links/comment-links.module
 import { MsnProductionModule } from './modules/msn-production/msn-production.module';
 import { RiskModule } from './modules/risk/risk.module';
 import { CriticalFlowModule } from './modules/critical-flow/critical-flow.module';
+import { YahooProductionModule } from './modules/yahoo-production/yahoo-production.module';
+import { ResourcesModule } from './modules/resources/resources.module';
+import { MailModule } from './common/mail/mail.module';
 import { McpSocialModule } from './modules/mcp-social/mcp-social.module';
 import { PageDirectoryModule } from './modules/page-directory/page-directory.module';
 
@@ -52,6 +55,7 @@ import { PageDirectoryModule } from './modules/page-directory/page-directory.mod
         tls: process.env.REDIS_TLS === 'true' ? {} : undefined,
       },
     }),
+    MailModule,
     AuthModule,
     FacebookModule,
     UtmAnalyticsModule,
@@ -64,6 +68,8 @@ import { PageDirectoryModule } from './modules/page-directory/page-directory.mod
     MsnProductionModule,
     RiskModule,
     CriticalFlowModule,
+    YahooProductionModule,
+    ResourcesModule,
     McpSocialModule,
     PageDirectoryModule,
   ],

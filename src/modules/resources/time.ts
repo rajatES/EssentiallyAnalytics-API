@@ -1,5 +1,6 @@
 /**
- * Calendar and shift arithmetic for the Critical Flow desk.
+ * Calendar and shift arithmetic for the editorial desk (Critical Flow and
+ * Yahoo run on the same one).
  *
  * Every timestamp in the source sheets is IST wall-clock (the workbooks are
  * set to Asia/Calcutta), and the desk's day is defined in IST regardless of

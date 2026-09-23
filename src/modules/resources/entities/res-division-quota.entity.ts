@@ -1,12 +1,12 @@
 import { Entity, Column, PrimaryColumn } from 'typeorm';
 
 /**
- * A division's daily publishing quota per shift, from the schedule workbook's
- * "DailyDynamics" tab. One row per (division, subFeed) — US Sports arrives as
+ * A division's daily Critical Flow quota per shift, from the aggregate sheet's
+ * Quotas tab (the schedule workbook's "DailyDynamics"). One row per (division, subFeed) — US Sports arrives as
  * separate Tennis and Olympics rows.
  */
 @Entity('cf_division_quota')
-export class CfDivisionQuota {
+export class ResDivisionQuota {
   /** hash(division | subFeed) */
   @PrimaryColumn()
   id: string;

@@ -12,6 +12,8 @@ import { MsnProductionService } from './msn-production.service';
 import { ReportsService } from './reports.service';
 import { Public } from '../../common/decorators/public.decorator';
 import { MsnFilterParams } from './types';
+import { MinRole } from '../../common/decorators/min-role.decorator';
+import { UserRole } from '../auth/entities/user.entity';
 
 @Controller('v1/msn-production')
 export class MsnProductionController {
@@ -41,6 +43,7 @@ export class MsnProductionController {
     return this.service.getSyncStatus();
   }
 
+  @MinRole(UserRole.ADMIN)
   @Post('sync')
   async triggerSync(@Query('force') force?: string) {
     // ?force=true re-parses every row (ignores the unchanged-hash skip) so a
@@ -211,6 +214,7 @@ export class MsnProductionController {
     return this.reports.getTargets();
   }
 
+  @MinRole(UserRole.ADMIN)
   @Put('reports/targets')
   updateReportTargets(@Body() body: any) {
     return this.reports.updateTargets(body);

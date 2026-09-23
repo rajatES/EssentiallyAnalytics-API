@@ -1,13 +1,16 @@
 import { Entity, Column, PrimaryColumn, Index } from 'typeorm';
 
 /**
- * One person as the desk managers describe them in the "Dynamic Schedule"
- * workbook — merged from its Writer Info, Editor Info and Roles & Contact
- * tabs. This is the managers' own canonical list, and it names people (and
- * divisions) the per-division source sheets never do.
+ * One person from the aggregate sheet's People tab, which the n8n resources
+ * lane builds from the managers' "Dynamic Schedule" workbook (Writer Info,
+ * Editor Info and Roles & Contact merged). The one people list for Critical
+ * Flow and Yahoo alike.
+ *
+ * The cf_ table name predates Yahoo sharing it; it is kept so existing
+ * deployments need no migration.
  */
 @Entity('cf_schedule_person')
-export class CfSchedulePerson {
+export class ResPerson {
   /** hash(primaryDivision | name) */
   @PrimaryColumn()
   id: string;

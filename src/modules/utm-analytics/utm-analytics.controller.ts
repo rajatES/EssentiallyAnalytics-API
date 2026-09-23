@@ -10,6 +10,8 @@ import {
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { AnalyticsService } from './utm-analytics.service';
+import { MinRole } from '../../common/decorators/min-role.decorator';
+import { UserRole } from '../auth/entities/user.entity';
 
 @Controller('v1/analytics')
 export class AnalyticsController {
@@ -128,6 +130,7 @@ export class AnalyticsController {
     };
   }
 
+  @MinRole(UserRole.ADMIN)
   @Post('sync/manual')
   async triggerManualSync() {
     await this.analyticsService.syncBigQueryData();

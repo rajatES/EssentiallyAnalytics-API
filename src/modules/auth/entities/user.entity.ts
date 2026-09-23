@@ -6,6 +6,11 @@ import {
 } from 'typeorm';
 
 export enum UserRole {
+  /**
+   * The one account that hands out access. Defined by SUPERADMIN_EMAIL /
+   * SUPERADMIN_PASSWORD and seeded on boot; never assignable through the API.
+   */
+  SUPERADMIN = 'superadmin',
   ADMIN = 'admin',
   MANAGEMENT = 'management',
   USER = 'user',
@@ -30,4 +35,10 @@ export class User {
 
   @CreateDateColumn()
   createdAt: Date;
+
+  @Column({ type: 'timestamptz', nullable: true })
+  lastLoginAt: Date | null;
+
+  @Column({ type: 'timestamptz', nullable: true })
+  passwordUpdatedAt: Date | null;
 }

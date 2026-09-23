@@ -23,6 +23,8 @@ import {
   windowResult,
   type HeadlineWindow,
 } from '../../../common/headline-windows';
+import { MinRole } from '../../../common/decorators/min-role.decorator';
+import { UserRole } from '../../auth/entities/user.entity';
 
 /** Safety cap for profileIds arrays to avoid unbounded IN clauses */
 const MAX_PROFILE_IDS = 50;
@@ -98,6 +100,7 @@ export class AnalyticsController {
       .json({ checked: profiles.length, updated, failed });
   }
 
+  @MinRole(UserRole.ADMIN)
   @Post('sync')
   async triggerGlobalManualSync(@Res() res: Response) {
     try {

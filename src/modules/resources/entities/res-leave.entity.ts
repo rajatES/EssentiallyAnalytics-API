@@ -1,12 +1,12 @@
 import { Entity, Column, PrimaryColumn, Index } from 'typeorm';
 
 /**
- * One leave record from the "CF Writer Leaves" / "CF Editor Leaves" logs.
- * Keyed on name only — the logs' Division column holds a role tag
- * ("CF - Editor"), not the sport.
+ * One leave record from the aggregate sheet's Leaves tab (the schedule's
+ * "CF Writer Leaves" / "CF Editor Leaves" logs, recent entries only). Keyed on
+ * name only — the logs' Division column holds a role tag, not the sport.
  */
 @Entity('cf_leave')
-export class CfLeave {
+export class ResLeave {
   /** hash(loggedAt | name | leaveStart) */
   @PrimaryColumn()
   id: string;

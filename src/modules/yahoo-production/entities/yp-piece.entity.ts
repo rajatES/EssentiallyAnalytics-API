@@ -6,19 +6,31 @@ import {
   UpdateDateColumn,
   Index,
 } from 'typeorm';
+import { ProductionPiece } from '../../production/production-piece';
 
 /**
- * One row per Critical Flow content piece, sourced from the aggregated
- * "Critical Flow Integrated DB" sheet that the n8n workflow builds out of the
- * per-division source workbooks.
+ * One row per Yahoo content piece, sourced from the aggregated "Yahoo
+ * Production DB" sheet that the n8n workflow builds out of the single Yahoo
+ * source workbook.
  *
- * The lifecycle this captures is NOT the MSN one. A piece is allotted, written
- * and submitted, then goes through a first editorial pass; if that pass sends
- * it back, a second pass follows. Publication is recorded as a date (the WP
- * columns exist in the source but are almost never filled in).
+ * The lifecycle is Critical Flow's minus the rework loop: a piece is allotted,
+ * written and submitted, then a newsroom editor takes one pass and publishes
+ * it. There is no send-back, no second pass and no second editor, so the
+ * second-pass fields of {@link ProductionPiece} are simply absent here rather
+ * than present and permanently empty.
+ *
+ * Two mappings are worth knowing when reading these numbers:
+ *
+ * - **`editorAt` is the automated publishing stamp.** The source records no
+ *   separate "editor finished" time, and in a single-pass pipeline publication
+ *   *is* the end of the editorial pass, so the two are the same event. This is
+ *   what makes the submission → editorial leg measurable at all.
+ * - **Allotment carries a real clock time**, assembled by the workflow from the
+ *   source's separate date and time cells. Unlike Critical Flow, writing time
+ *   here is genuinely measured rather than inferred from midnight.
  */
-@Entity('cf_pieces')
-export class CfPiece {
+@Entity('yp_pieces')
+export class YpPiece implements ProductionPiece {
   @PrimaryColumn()
   id: string;
 
@@ -28,12 +40,11 @@ export class CfPiece {
 
   // ── Dimensions ──
 
-  /** Sport/division, e.g. "NFL", "College Football", "NASCAR". */
   @Index()
   @Column({ default: 'Unknown' })
   division: string;
 
-  /** Source month tab, e.g. "September 2026". */
+  /** Source month tab, e.g. "Sept 2026". */
   @Index()
   @Column({ default: '' })
   month: string;
@@ -42,33 +53,24 @@ export class CfPiece {
   @Column({ default: 'Unknown' })
   writer: string;
 
-  /** First-pass editor. */
+  /** The newsroom editor who handled the piece ("NR/NR equivalent"). */
   @Index()
   @Column({ default: 'Unknown' })
   editor: string;
-
-  /** Second-pass editor — only set on pieces that went back for rework. */
-  @Index()
-  @Column({ default: '' })
-  editor2: string;
 
   @Index()
   @Column({ default: 'Unknown' })
   allottedBy: string;
 
-  /** "Trend Setter" | "In-Depth" | "Quick Hit" | … */
+  /** "In-Depth" | "Urgent" | … */
   @Index()
   @Column({ default: 'Unknown' })
   articleType: string;
 
-  /**
-   * The source sheet's Yahoo/Newsbreak flag. Retained so the raw column keeps
-   * round-tripping, but no longer reported on: this sheet is entirely Critical
-   * Flow work, and Yahoo production is tracked in its own pipeline.
-   */
+  /** "Enhanced" / "Enhancements Not Needed" — Yahoo's own quality flag. */
   @Index()
-  @Column({ type: 'boolean', nullable: true })
-  yahoo: boolean | null;
+  @Column({ default: '' })
+  enhancement: string;
 
   // ── Status ──
 
@@ -77,62 +79,42 @@ export class CfPiece {
   editorialStatus: string;
 
   @Column({ default: '' })
-  editorialStatus2: string;
-
-  /** Send-back reason taxonomy, e.g. "Robotic Writing", "Lack of BBT (Context)". */
-  @Index()
-  @Column({ default: '' })
-  sbReason: string;
-
-  @Column({ default: '' })
   wpStatus: string;
 
   // ── Lifecycle timestamps ──
 
+  /** Allotment date joined with the hand-typed allotment clock. */
   @Column({ type: 'timestamptz', nullable: true })
   allottedAt: Date | null;
 
   @Column({ type: 'timestamptz', nullable: true })
   submittedAt: Date | null;
 
-  /** Submission restated in EST by the source sheet; kept for cross-checks. */
-  @Column({ type: 'timestamptz', nullable: true })
-  submittedEst: Date | null;
-
-  /** First editorial pass completed. */
+  /** Publication — and, in this single-pass pipeline, the editorial pass. */
   @Column({ type: 'timestamptz', nullable: true })
   editorAt: Date | null;
 
-  /** Second editorial pass completed (post send-back). */
-  @Column({ type: 'timestamptz', nullable: true })
-  editorAt2: Date | null;
-
-  /** Actual WP go-live stamp. Rarely populated in the source. */
+  /** Actual WP go-live stamp. Filled on a handful of rows only. */
   @Column({ type: 'timestamptz', nullable: true })
   liveAt: Date | null;
 
   @Column({ type: 'timestamptz', nullable: true })
   wpCheckedAt: Date | null;
 
-  /** Publication date as recorded by the sheet's "Date EST" column. */
   @Index()
   @Column({ type: 'date', nullable: true })
   publishedDate: string | null;
 
-  /** Date-only anchor (allotment day, falling back through the lifecycle). */
+  /** Date-only anchor: the source's Work Date, falling forward if blank. */
   @Index()
   @Column({ type: 'date', nullable: true })
   date: string | null;
 
   // ── Durations (hours) ──
 
-  /** End-to-end turnaround as computed by the source sheet. */
+  /** Allotment → publication, derived by the workflow; the source has no TAT. */
   @Column({ type: 'real', nullable: true })
   tatHours: number | null;
-
-  /** Time spent in the send-back loop. */
-  @Column({ type: 'real', nullable: true })
-  sbHours: number | null;
 
   // ── Text / metadata ──
 
@@ -155,12 +137,6 @@ export class CfPiece {
 
   @Column({ type: 'text', default: '' })
   editorComment: string;
-
-  @Column({ type: 'text', default: '' })
-  editorComment2: string;
-
-  @Column({ type: 'text', default: '' })
-  articleMap: string;
 
   @Column({ type: 'text', default: '' })
   plagReport: string;

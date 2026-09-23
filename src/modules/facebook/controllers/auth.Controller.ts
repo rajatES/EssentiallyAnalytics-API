@@ -16,6 +16,8 @@ import {
   fetchLinkedInstagramAccounts,
   fetchPermanentPageTokens,
 } from '../services/meta.service';
+import { MinRole } from '../../../common/decorators/min-role.decorator';
+import { UserRole } from '../../auth/entities/user.entity';
 
 @Controller('api/auth/meta')
 export class AuthController {
@@ -37,6 +39,7 @@ export class AuthController {
     @InjectQueue('social-sync-queue') private syncQueue: Queue,
   ) {}
 
+  @MinRole(UserRole.MANAGEMENT)
   @Post('fetch-pages')
   async fetchPages(
     @Body() body: { shortLivedToken: string },
@@ -56,6 +59,7 @@ export class AuthController {
     }
   }
 
+  @MinRole(UserRole.MANAGEMENT)
   @Post('confirm-pages')
   async confirmPages(
     @Body() body: { selectedPages?: any[]; selectedIgAccounts?: any[] },
@@ -148,6 +152,7 @@ export class AuthController {
     }
   }
 
+  @MinRole(UserRole.MANAGEMENT)
   @Post('disconnect')
   async disconnectMeta(
     @Body()

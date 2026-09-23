@@ -1,14 +1,14 @@
 import { Controller, Get, Post, Query } from '@nestjs/common';
-import { CriticalFlowService } from './critical-flow.service';
-import { CfFilterParams } from './types';
+import { YahooProductionService } from './yahoo-production.service';
+import { YpFilterParams } from './types';
 import { MinRole } from '../../common/decorators/min-role.decorator';
 import { UserRole } from '../auth/entities/user.entity';
 
-@Controller('v1/critical-flow')
-export class CriticalFlowController {
-  constructor(private readonly service: CriticalFlowService) {}
+@Controller('v1/yahoo-production')
+export class YahooProductionController {
+  constructor(private readonly service: YahooProductionService) {}
 
-  private parseFilters(query: Record<string, any>): CfFilterParams {
+  private parseFilters(query: Record<string, any>): YpFilterParams {
     const split = (v: any): string[] | undefined => (v ? String(v).split(',') : undefined);
     return {
       startDate: query.startDate || undefined,
@@ -75,11 +75,6 @@ export class CriticalFlowController {
     return this.service.getAllotterStats(this.parseFilters(query));
   }
 
-  @Get('send-backs')
-  getSendBacks(@Query() query: Record<string, any>) {
-    return this.service.getSendBacks(this.parseFilters(query));
-  }
-
   @Get('tat')
   getTat(@Query() query: Record<string, any>) {
     return this.service.getTat(this.parseFilters(query));
@@ -88,6 +83,11 @@ export class CriticalFlowController {
   @Get('divisions')
   getDivisions(@Query() query: Record<string, any>) {
     return this.service.getDivisions(this.parseFilters(query));
+  }
+
+  @Get('quotas')
+  getQuotas(@Query() query: Record<string, any>) {
+    return this.service.getQuotaAttainment(this.parseFilters(query));
   }
 
   @Get('article-types')

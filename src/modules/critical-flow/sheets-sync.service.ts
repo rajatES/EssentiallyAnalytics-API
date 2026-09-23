@@ -1,9 +1,8 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { google } from 'googleapis';
-import { ParsedPiece, ParsedRosterPerson } from './types';
+import { ParsedPiece } from './types';
 import {
   clean,
-  classifyRole,
   computeRowHash,
   isValidPiece,
   normalizeArticleType,
@@ -67,21 +66,6 @@ const PIECE_PATTERNS: { key: PieceKey; match: RegExp; required?: boolean }[] = [
   { key: 'liveAt', match: /^live\s*at$/i },
   { key: 'wpStatus', match: /^wp\s*status$/i },
   { key: 'wpCheckedAt', match: /^wp\s*last\s*checked$/i },
-  { key: 'kind', match: /^__kind$/i },
-];
-
-type RosterKey =
-  | 'id' | 'division' | 'name' | 'role' | 'weekoff' | 'shift' | 'email' | 'target' | 'kind';
-
-const ROSTER_PATTERNS: { key: RosterKey; match: RegExp; required?: boolean }[] = [
-  { key: 'id', match: /^id$/i, required: true },
-  { key: 'division', match: /^division$/i },
-  { key: 'name', match: /^name$/i, required: true },
-  { key: 'role', match: /^role$/i },
-  { key: 'weekoff', match: /^week\s*-?\s*off$/i },
-  { key: 'shift', match: /^shift$/i },
-  { key: 'email', match: /^email$/i },
-  { key: 'target', match: /^daily\s*target$/i },
   { key: 'kind', match: /^__kind$/i },
 ];
 
@@ -165,63 +149,6 @@ export class CfSheetsSyncService {
     } catch (error: any) {
       this.logger.error(`Failed to fetch Critical Flow sheet: ${error.message}`);
       throw error;
-    }
-  }
-
-  async fetchRoster(): Promise<ParsedRosterPerson[]> {
-    const sheetId = process.env.CF_SHEET_ID;
-    const tabName = process.env.CF_ROSTER_TAB_NAME || 'Roster';
-    if (!sheetId) return [];
-
-    try {
-      const sheets = google.sheets({ version: 'v4', auth: this.getAuth() });
-      const res = await sheets.spreadsheets.values.get({
-        spreadsheetId: sheetId,
-        range: `'${tabName}'!A:J`,
-        valueRenderOption: 'UNFORMATTED_VALUE',
-        dateTimeRenderOption: 'SERIAL_NUMBER',
-      });
-
-      const rows = res.data.values;
-      if (!rows || rows.length < 2) return [];
-
-      const col = this.matchHeaders(rows[0], ROSTER_PATTERNS, 'Critical Flow roster');
-      if (!col) return [];
-
-      const text = (row: any[], key: RosterKey): string => {
-        const i = col[key];
-        return i === undefined ? '' : clean(row[i]);
-      };
-
-      const parsed: ParsedRosterPerson[] = [];
-      for (const row of rows.slice(1)) {
-        const id = text(row, 'id');
-        const name = text(row, 'name');
-        if (!id || !name) continue;
-        const kind = text(row, 'kind').toLowerCase();
-        if (kind && kind !== 'roster') continue;
-
-        const role = text(row, 'role');
-        parsed.push({
-          id,
-          division: normalizeDivision(text(row, 'division')),
-          name: normalizePerson(name),
-          role,
-          roleGroup: classifyRole(role),
-          weekoff: text(row, 'weekoff'),
-          shift: text(row, 'shift'),
-          email: text(row, 'email'),
-          dailyTarget: parseNumber(
-            col.target === undefined ? null : row[col.target],
-          ),
-          rawHash: computeRowHash(row),
-        });
-      }
-      return parsed;
-    } catch (error: any) {
-      // Leave the existing roster in place rather than wiping it on a bad fetch.
-      this.logger.error(`Failed to fetch Critical Flow roster: ${error.message}`);
-      return [];
     }
   }
 

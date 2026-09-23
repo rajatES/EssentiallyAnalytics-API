@@ -1,13 +1,17 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger, OnApplicationBootstrap } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
-import { CriticalFlowService } from './critical-flow.service';
-import { CfPiece } from './entities/cf-piece.entity';
-import { CfRosterPerson } from './entities/cf-roster-person.entity';
-import { CfSchedulePerson } from './entities/cf-schedule-person.entity';
-import { CfLeave } from './entities/cf-leave.entity';
-import { CfDivisionQuota } from './entities/cf-division-quota.entity';
-import { CfResourceProfile } from './entities/cf-resource-profile.entity';
+import { CfPiece } from '../critical-flow/entities/cf-piece.entity';
+import { YpPiece } from '../yahoo-production/entities/yp-piece.entity';
+import { YpDivisionQuota } from '../yahoo-production/entities/yp-division-quota.entity';
+import { NameResolver, buildNameResolver } from '../production/name-resolver';
+import { ResPerson } from './entities/res-person.entity';
+import { ResLeave } from './entities/res-leave.entity';
+import { ResDivisionQuota } from './entities/res-division-quota.entity';
+import { ResProfile } from './entities/res-profile.entity';
+import { ResourcesSyncService } from './resources-sync.service';
+import { FLOAT_POOLS, canonicalDivision, parseDivisions } from './divisions';
+import { WorkItem, buildWorkItems, namedPieces } from './work-items';
 import {
   DivisionResourceSummary,
   ResourceBoardResult,
@@ -21,8 +25,6 @@ import {
   SuggestCandidate,
   SuggestResult,
 } from './types';
-import { isPublished, pendingStage, subFeedOf } from './stages';
-import { parseShift } from './normalization';
 import {
   currentShift,
   dateWithin,
@@ -40,25 +42,25 @@ const WRITER_AVAILABLE_INFLIGHT = 2;
 /** Content-only names need at least this many pieces to be listed as a resource. */
 const UNLISTED_MIN_PIECES = 2;
 
-interface LeaveIdx {
-  byName: Map<string, CfLeave[]>;
-}
-
 interface Ctx {
   date: string;
   weekday: string;
   now: Date;
   shift: Shift;
-  pieces: CfPiece[];
-  resolve: (n: string, d: string) => string;
-  /** lower-cased resolved writer name → their pieces (all divisions) */
-  byWriter: Map<string, CfPiece[]>;
-  byEditor: Map<string, CfPiece[]>;
+  items: WorkItem[];
+  resolve: NameResolver;
+  /** lower-cased resolved writer name → their work (all divisions, both sheets) */
+  byWriter: Map<string, WorkItem[]>;
+  byEditor: Map<string, WorkItem[]>;
   /** lower-cased resolved name → division → piece count */
   worked: Map<string, Map<string, number>>;
-  leaves: LeaveIdx;
-  profiles: Map<string, CfResourceProfile>;
-  quotas: CfDivisionQuota[];
+  leavesFor: (name: string) => ResLeave[];
+  profileFor: (division: string, name: string) => ResProfile | undefined;
+  /** Every person's key on the board — a profile under one of these is not up for adoption. */
+  ownedKeys: Set<string>;
+  quotas: ResDivisionQuota[];
+  /** board division → Yahoo's daily quota for it */
+  yahooQuota: Map<string, number>;
   people: ResourcePerson[];
 }
 
@@ -66,111 +68,181 @@ function lower(s: string): string {
   return s.toLowerCase();
 }
 
-function addTo<K>(m: Map<K, CfPiece[]>, k: K, p: CfPiece) {
-  const arr = m.get(k);
-  if (arr) arr.push(p);
-  else m.set(k, [p]);
+function firstToken(s: string): string {
+  return lower(s).split(/[\s.]+/)[0] || '';
 }
 
-/** The desk day a piece's submission counts toward, with the editorial stamp
+function addTo<K>(m: Map<K, WorkItem[]>, k: K, w: WorkItem) {
+  const arr = m.get(k);
+  if (arr) arr.push(w);
+  else m.set(k, [w]);
+}
+
+/** The desk day a submission counts toward, with the editorial stamp
  *  standing in where a division never fills the submission column. */
-function submissionDay(p: CfPiece): string | null {
-  const stamp = p.submittedAt || p.editorAt;
+function submissionDay(w: WorkItem): string | null {
+  const stamp = w.submittedAt || w.editorAt;
   return stamp ? opsDayOf(new Date(stamp)) : null;
 }
 
-function submissionShift(p: CfPiece): Shift | null {
-  const stamp = p.submittedAt || p.editorAt;
+function submissionShift(w: WorkItem): Shift | null {
+  const stamp = w.submittedAt || w.editorAt;
   return stamp ? shiftOf(new Date(stamp)) : null;
 }
 
+/** A person as the sheets describe them, before today's numbers are added. */
+interface PersonBase {
+  key: string; name: string; primaryDivision: string; subFeed: string;
+  secondaryDivisions: string[]; role: string; roleGroup: string; pod: string;
+  shift: string; shiftClock: string; weekoff: string; backup: string;
+  weekPlan: Record<string, any>; sources: string[]; flags: string[]; employment: string;
+}
+
+const onCfSheet = (w: WorkItem) => w.source !== 'yahoo';
+const onYahooSheet = (w: WorkItem) => w.source !== 'cf';
+
+/**
+ * Who can take work now, and who covers whom. People come from the managers'
+ * Dynamic Schedule (synced by {@link ResourcesSyncService}); load and output
+ * are counted over Critical Flow and Yahoo together, because the same writers
+ * and editors work both.
+ */
 @Injectable()
-export class ResourcesService {
+export class ResourcesService implements OnApplicationBootstrap {
+  private readonly logger = new Logger(ResourcesService.name);
+
   constructor(
-    private readonly cf: CriticalFlowService,
-    @InjectRepository(CfPiece) private readonly pieceRepo: Repository<CfPiece>,
-    @InjectRepository(CfRosterPerson) private readonly rosterRepo: Repository<CfRosterPerson>,
-    @InjectRepository(CfSchedulePerson) private readonly schedRepo: Repository<CfSchedulePerson>,
-    @InjectRepository(CfLeave) private readonly leaveRepo: Repository<CfLeave>,
-    @InjectRepository(CfDivisionQuota) private readonly quotaRepo: Repository<CfDivisionQuota>,
-    @InjectRepository(CfResourceProfile) private readonly profileRepo: Repository<CfResourceProfile>,
+    private readonly sync: ResourcesSyncService,
+    @InjectRepository(CfPiece) private readonly cfRepo: Repository<CfPiece>,
+    @InjectRepository(YpPiece) private readonly ypRepo: Repository<YpPiece>,
+    @InjectRepository(YpDivisionQuota) private readonly ypQuotaRepo: Repository<YpDivisionQuota>,
+    @InjectRepository(ResPerson) private readonly peopleRepo: Repository<ResPerson>,
+    @InjectRepository(ResLeave) private readonly leaveRepo: Repository<ResLeave>,
+    @InjectRepository(ResDivisionQuota) private readonly quotaRepo: Repository<ResDivisionQuota>,
+    @InjectRepository(ResProfile) private readonly profileRepo: Repository<ResProfile>,
   ) {}
+
+  onApplicationBootstrap() {
+    this.sync.firstSync
+      .then(() => this.carryOverRosterTargets())
+      .catch((e) => this.logger.error(`Carrying over roster targets failed: ${e.message}`));
+  }
 
   // ── Context ──
 
   private async buildContext(dateParam?: string): Promise<Ctx> {
     const now = new Date();
     const date = dateParam && /^\d{4}-\d{2}-\d{2}$/.test(dateParam) ? dateParam : todayIst(now);
-    const [pieces, roster, sched, leaves, quotas, profiles, resolve] = await Promise.all([
-      this.pieceRepo.find(),
-      this.rosterRepo.find(),
-      this.schedRepo.find(),
+    const [cf, yp, sched, leaves, quotas, profiles, ypQuotas] = await Promise.all([
+      this.cfRepo.find(),
+      this.ypRepo.find(),
+      this.peopleRepo.find(),
       this.leaveRepo.find(),
       this.quotaRepo.find(),
       this.profileRepo.find(),
-      this.cf.nameResolver(),
+      this.ypQuotaRepo.find(),
     ]);
 
-    const byWriter = new Map<string, CfPiece[]>();
-    const byEditor = new Map<string, CfPiece[]>();
+    const items = buildWorkItems(cf, yp, now);
+    const resolve = buildNameResolver(
+      sched.flatMap((s) => [
+        { division: s.primaryDivision, name: s.name, floats: FLOAT_POOLS.has(s.primaryDivision) },
+        ...(s.secondaryDivisions || []).map((d) => ({ division: d, name: s.name })),
+      ]),
+      namedPieces(items),
+    );
+
+    const byWriter = new Map<string, WorkItem[]>();
+    const byEditor = new Map<string, WorkItem[]>();
     const worked = new Map<string, Map<string, number>>();
-    const touch = (name: string, division: string, p: CfPiece, m: Map<string, CfPiece[]>) => {
+    const touch = (name: string, w: WorkItem, m: Map<string, WorkItem[]>) => {
       if (!name || name === 'Unknown') return;
-      const key = lower(resolve(name, division));
-      addTo(m, key, p);
+      const key = lower(resolve(name, w.division));
+      addTo(m, key, w);
       if (!worked.has(key)) worked.set(key, new Map());
-      const w = worked.get(key)!;
-      w.set(division, (w.get(division) ?? 0) + 1);
+      const c = worked.get(key)!;
+      c.set(w.division, (c.get(w.division) ?? 0) + 1);
     };
-    for (const p of pieces) {
-      touch(p.writer, p.division, p, byWriter);
-      touch(p.editor, p.division, p, byEditor);
-      if (p.editor2) touch(p.editor2, p.division, p, byEditor);
+    for (const w of items) {
+      touch(w.writer, w, byWriter);
+      for (const e of w.editors) touch(e, w, byEditor);
     }
 
-    const leaveIdx: LeaveIdx = { byName: new Map() };
-    for (const l of leaves) {
-      const k = lower(l.name);
-      if (!leaveIdx.byName.has(k)) leaveIdx.byName.set(k, []);
-      leaveIdx.byName.get(k)!.push(l);
-    }
+    // The leave form takes whatever name the person typed — "Rati" for "Rati
+    // Agrawal". A one-word leave name attaches to the only person with that
+    // first name; if two people share it, it attaches to neither.
+    const firstCount = new Map<string, number>();
+    for (const s of sched) firstCount.set(firstToken(s.name), (firstCount.get(firstToken(s.name)) ?? 0) + 1);
+    const leavesFor = (name: string): ResLeave[] => {
+      const l = lower(name);
+      const f = firstToken(name);
+      return leaves.filter((x) => {
+        const xl = lower(x.name);
+        if (xl === l) return true;
+        return !xl.includes(' ') && xl === f && firstCount.get(f) === 1;
+      });
+    };
 
-    const profileMap = new Map(profiles.map((p) => [p.id, p]));
+    // Profiles are keyed `${division}|${name}` with the name as the schedule
+    // spelt it when the quota was saved. When the spelling since grew ("Yeswanth"
+    // → "Yeswanth Praveen"), the saved quota still belongs to them — but only a
+    // profile nobody else answers to is adopted, or "Archana.R" would take
+    // "Archana"'s quota as well and the one target would count twice.
+    const profileByKey = new Map(profiles.map((p) => [p.id, p]));
+    const ownedKeys = new Set<string>();
+    const profileFor = (division: string, name: string): ResProfile | undefined => {
+      const exact = profileByKey.get(`${division}|${name}`);
+      if (exact) return exact;
+      const want = lower(resolve(name, division));
+      const same = profiles.filter((p) => p.division === division && !ownedKeys.has(p.id));
+      return (
+        same.find((p) => lower(resolve(p.name, division)) === want) ||
+        same.find((p) => !p.name.includes(' ') && lower(p.name) === firstToken(name))
+      );
+    };
+
+    const yahooQuota = new Map<string, number>();
+    for (const q of ypQuotas) {
+      if (q.quota == null) continue;
+      const covered = new Set(
+        (q.divisions?.length ? q.divisions : [q.division]).map((d) => canonicalDivision(d).division),
+      );
+      for (const d of covered) yahooQuota.set(d, (yahooQuota.get(d) ?? 0) + q.quota);
+    }
 
     const ctx: Ctx = {
       date,
       weekday: weekdayNameOf(date),
       now,
       shift: currentShift(now),
-      pieces,
+      items,
       resolve,
       byWriter,
       byEditor,
       worked,
-      leaves: leaveIdx,
-      profiles: profileMap,
+      leavesFor,
+      profileFor,
+      ownedKeys,
       quotas,
+      yahooQuota,
       people: [],
     };
-    ctx.people = this.buildPeople(ctx, sched, roster);
+    ctx.people = this.buildPeople(ctx, sched);
     return ctx;
   }
 
   /**
-   * The people universe: the managers' schedule list first, enriched from the
-   * per-division rosters, plus anyone doing work who appears on neither — so a
-   * writer nobody has added to a sheet yet still shows up rather than vanishing.
+   * The people universe: the managers' schedule, plus anyone doing work who is
+   * not on it — so a writer nobody has added yet still shows up rather than
+   * vanishing.
    */
-  private buildPeople(ctx: Ctx, sched: CfSchedulePerson[], roster: CfRosterPerson[]): ResourcePerson[] {
-    const out = new Map<string, ResourcePerson>();
+  private buildPeople(ctx: Ctx, sched: ResPerson[]): ResourcePerson[] {
+    const out = new Map<string, PersonBase>();
     const keyOf = (division: string, name: string) => `${division}|${name}`;
 
-    // Identity for de-duplication is the division-resolved, lower-cased name,
-    // so "Abhimanyu Gupta" (schedule) and "Abhimanyu" (roster) are one Golf
-    // editor. The DISPLAY name is whatever the first source spelt it — the
-    // managers' schedule wins over the rosters, which win over the content —
-    // rather than the resolver's pick, which favours the commonest content
-    // spelling and would show "aadesh" where the schedule says "Aadesh".
+    // Identity for de-duplication is the division-resolved, lower-cased name;
+    // the DISPLAY name is the schedule's spelling, not the resolver's pick,
+    // which favours the commonest content spelling.
     const identity = (division: string, name: string) =>
       `${division}|${lower(ctx.resolve(name, division))}`;
     const seen = new Set<string>();
@@ -186,68 +258,31 @@ export class ResourcesService {
       for (const k of this.contentKeys(ctx, ctx.byEditor, name, division)) listedNames.add(k);
     };
 
-    const rosterIdx = new Map<string, CfRosterPerson>();
-    for (const r of roster) rosterIdx.set(identity(r.division, r.name), r);
-
     for (const s of sched) {
       if (seen.has(identity(s.primaryDivision, s.name))) continue;
       note(s.primaryDivision, s.name);
-      const name = s.name;
-      const key = keyOf(s.primaryDivision, name);
-      const r = rosterIdx.get(identity(s.primaryDivision, s.name));
-      const weekPlan = safeJson(s.weekPlan);
-      out.set(key, this.materialise(ctx, {
+      const key = keyOf(s.primaryDivision, s.name);
+      out.set(key, {
         key,
-        name,
+        name: s.name,
         primaryDivision: s.primaryDivision,
         subFeed: s.subFeed,
         secondaryDivisions: s.secondaryDivisions || [],
-        role: s.role || r?.role || '',
-        roleGroup: s.roleGroup !== 'other' ? s.roleGroup : (r?.roleGroup || 'other'),
+        role: s.role,
+        roleGroup: s.roleGroup,
         pod: s.pod,
-        // Rosters put either a clock ("5 PM - 2 AM") or a shift code ("EMP")
-        // in their Shift column; route each to the field it actually is.
-        shift: s.shift || parseShift(r?.shift),
-        shiftClock: s.shiftClock || (parseShift(r?.shift) ? '' : r?.shift || ''),
-        weekoff: s.weekoff || r?.weekoff || '',
+        shift: s.shift,
+        shiftClock: s.shiftClock,
+        weekoff: s.weekoff,
         backup: s.backup,
-        email: r?.email || '',
-        rosterTarget: r?.dailyTarget ?? null,
-        weekPlan,
-        sources: ['schedule', ...(r ? ['roster'] : [])],
+        weekPlan: safeJson(s.weekPlan),
+        sources: ['schedule'],
         flags: s.flags ? s.flags.split(',').filter(Boolean) : [],
-        status: s.status,
-      }));
+        employment: s.status,
+      });
     }
 
-    for (const r of roster) {
-      if (seen.has(identity(r.division, r.name))) continue;
-      if (r.roleGroup !== 'writer' && r.roleGroup !== 'editor') continue; // leads are not allocatable
-      note(r.division, r.name);
-      const name = r.name;
-      const key = keyOf(r.division, name);
-      out.set(key, this.materialise(ctx, {
-        key, name,
-        primaryDivision: r.division,
-        subFeed: '',
-        secondaryDivisions: [],
-        role: r.role,
-        roleGroup: r.roleGroup,
-        pod: '',
-        shift: parseShift(r.shift),
-        shiftClock: parseShift(r.shift) ? '' : r.shift,
-        weekoff: r.weekoff,
-        backup: '',
-        email: r.email,
-        rosterTarget: r.dailyTarget,
-        weekPlan: {},
-        sources: ['roster'],
-        flags: [],
-        status: '',
-      }));
-    }
-
-    // Content-only people: doing the work, on nobody's sheet.
+    // Content-only people: doing the work, not on the schedule.
     const contentSeen = new Set<string>();
     for (const [lname, divs] of ctx.worked) {
       if (listedNames.has(lname) || contentSeen.has(lname)) continue;
@@ -258,47 +293,44 @@ export class ResourcesService {
       const asWriter = ctx.byWriter.get(lname)?.length ?? 0;
       const asEditor = ctx.byEditor.get(lname)?.length ?? 0;
       const sample = (ctx.byWriter.get(lname) || ctx.byEditor.get(lname) || [])[0];
-      const display = sample
-        ? ctx.resolve(asWriter >= asEditor ? sample.writer : sample.editor, sample.division)
+      const raw = sample
+        ? asWriter >= asEditor
+          ? sample.writer
+          : sample.editors.find((e) => lower(ctx.resolve(e, sample.division)) === lname) || lname
         : lname;
+      const display = sample ? ctx.resolve(raw, sample.division) : lname;
       const key = keyOf(primary, display);
-      out.set(key, this.materialise(ctx, {
+      out.set(key, {
         key, name: display,
         primaryDivision: primary,
         subFeed: '',
         secondaryDivisions: [],
         role: asWriter >= asEditor ? 'Writer' : 'Editor',
         roleGroup: asWriter >= asEditor ? 'writer' : 'editor',
-        pod: '', shift: '', shiftClock: '', weekoff: '', backup: '', email: '',
-        rosterTarget: null, weekPlan: {},
+        pod: '', shift: '', shiftClock: '', weekoff: '', backup: '',
+        weekPlan: {},
         sources: ['content'],
         flags: ['unlisted'],
-        status: '',
-      }));
+        employment: '',
+      });
     }
 
-    return [...out.values()].sort(
+    // Keys are settled before anyone's profile is looked up, so an old-spelling
+    // profile is only adopted when no one on the board answers to it exactly.
+    for (const k of out.keys()) ctx.ownedKeys.add(k);
+    return [...out.values()].map((b) => this.materialise(ctx, b)).sort(
       (a, b) => a.primaryDivision.localeCompare(b.primaryDivision) || a.name.localeCompare(b.name),
     );
   }
 
-  private materialise(
-    ctx: Ctx,
-    base: {
-      key: string; name: string; primaryDivision: string; subFeed: string;
-      secondaryDivisions: string[]; role: string; roleGroup: string; pod: string;
-      shift: string; shiftClock: string; weekoff: string; backup: string; email: string;
-      rosterTarget: number | null; weekPlan: Record<string, any>;
-      sources: string[]; flags: string[]; status: string;
-    },
-  ): ResourcePerson {
-    const lname = lower(base.name);
-    const asWriter = this.piecesFor(ctx, ctx.byWriter, base.name, base.primaryDivision);
-    const asEditor = this.piecesFor(ctx, ctx.byEditor, base.name, base.primaryDivision);
-    const mine = base.roleGroup === 'editor' ? asEditor : asWriter;
+  private materialise(ctx: Ctx, base: PersonBase): ResourcePerson {
+    const asWriter = this.workFor(ctx, ctx.byWriter, base.name, base.primaryDivision);
+    const asEditor = this.workFor(ctx, ctx.byEditor, base.name, base.primaryDivision);
+    const isEditor = base.roleGroup === 'editor';
+    const mine = isEditor ? asEditor : asWriter;
 
     // ── Off today? ──
-    const onLeave = this.leaveOn(ctx, lname);
+    const onLeave = this.leaveOn(ctx, base.name);
     const plan = base.weekPlan[ctx.weekday];
     let offReason = '';
     let coveredBy = '';
@@ -312,43 +344,47 @@ export class ResourcesService {
       offReason = 'Weekly off';
       coveredBy = base.backup;
     }
-    if (base.status && /inactive|left|resigned/i.test(base.status)) {
-      offReason = offReason || `Inactive (${base.status})`;
+    if (/inactive|left|resigned|exited/i.test(base.employment)) {
+      offReason = offReason || `Inactive (${base.employment})`;
     }
     const offToday = !!offReason;
 
     // ── Output today ──
-    const doneToday = base.roleGroup === 'editor'
-      ? asEditor.filter((p) => p.publishedDate === ctx.date && isPublished(p)).length
-      : asWriter.filter((p) => submissionDay(p) === ctx.date).length;
-    const verifiedToday = base.roleGroup === 'editor'
-      ? asEditor.filter((p) => p.editorAt && opsDayOf(new Date(p.editorAt)) === ctx.date).length
+    const done = isEditor
+      ? asEditor.filter((w) => w.publishedDate === ctx.date && w.published)
+      : asWriter.filter((w) => submissionDay(w) === ctx.date);
+    const verifiedToday = isEditor
+      ? asEditor.filter((w) => w.editorAt && opsDayOf(new Date(w.editorAt)) === ctx.date).length
       : 0;
 
     // ── Load ──
     let inFlight = 0;
     let queue = 0;
-    for (const p of mine) {
-      const st = pendingStage(p, ctx.now);
+    let loadYahoo = 0;
+    for (const w of mine) {
+      const st = w.pending;
       if (!st) continue;
-      if (base.roleGroup === 'editor') {
-        if (st === 'Awaiting Editorial' || st === 'Awaiting Live') queue++;
-      } else if (st === 'Awaiting Submission' || st === 'Sent Back') {
-        inFlight++;
-      }
+      const counts = isEditor
+        ? st === 'Awaiting Editorial' || st === 'Awaiting Live'
+        : st === 'Awaiting Submission' || st === 'Sent Back';
+      if (!counts) continue;
+      if (isEditor) queue++;
+      else inFlight++;
+      if (onYahooSheet(w)) loadYahoo++;
     }
 
-    const profile = ctx.profiles.get(base.key);
-    const quota = profile?.dailyQuota ?? base.rosterTarget ?? null;
+    const profile = ctx.profileFor(base.primaryDivision, base.name);
+    const quota = profile?.dailyQuota ?? null;
+    const doneToday = done.length;
     const remaining = quota == null ? null : Math.max(quota - doneToday - inFlight, 0);
 
     const { status, statusReason } = this.statusFor({
       roleGroup: base.roleGroup, offToday, offReason, quota, doneToday, inFlight, queue, remaining,
     });
 
-    const undated = mine.filter((p) => !p.date).length;
+    const undated = mine.filter((w) => !w.date).length;
     let lastActive: string | null = null;
-    for (const p of mine) if (p.date && (!lastActive || p.date > lastActive)) lastActive = p.date;
+    for (const w of mine) if (w.date && (!lastActive || w.date > lastActive)) lastActive = w.date;
 
     const workedAgg = new Map<string, number>();
     for (const k of this.contentKeys(ctx, ctx.worked, base.name, base.primaryDivision)) {
@@ -380,38 +416,45 @@ export class ResourcesService {
       coveredBy,
       backup: base.backup,
       doneToday,
+      doneYahoo: done.filter(onYahooSheet).length,
       verifiedToday,
       quota,
       inFlight,
       queue,
+      loadYahoo,
       remaining,
       undatedPieces: undated,
       lastActive,
-      email: base.email,
       sources: base.sources,
       flags: base.flags,
+      employment: base.employment,
       notes: profile?.notes || '',
     };
   }
 
   /**
-   * The content index is keyed on the resolver's spelling of a name; a sheet
-   * may spell the same person differently ("Gokul Gopalakrishna Pillai" vs the
-   * content's "Gokul"). Try the exact name, then the resolved name, then a
-   * unique first-name match — the same ladder the resolver itself uses.
+   * The content index is keyed on the resolver's spelling of a name; the
+   * schedule may spell the same person differently ("Gokul Gopalakrishna
+   * Pillai" vs the content's "Gokul"). Try the exact name, then the resolved
+   * name, then a unique first-name match — the same ladder the resolver uses.
    */
   private contentKeys<V>(ctx: Ctx, index: Map<string, V>, name: string, division: string): string[] {
     const exact = lower(name);
     const resolved = lower(ctx.resolve(name, division));
-    const first = exact.split(/[\s.]+/)[0];
-    const sameFirst = first ? [...index.keys()].filter((k) => k.split(/[\s.]+/)[0] === first) : [];
+    const first = firstToken(name);
+    const sameFirst = first ? [...index.keys()].filter((k) => firstToken(k) === first) : [];
 
-    // Associates float across every division by definition, and the content
-    // records them under whichever spelling that division's sheet used —
-    // "Yash" in one, "Yash Kotak" in another. For them, every key sharing the
-    // first name is the same person; for everyone else that would be a guess.
-    if (division === 'Associate' && exact.split(/[\s.]+/).length === 1) {
-      const all = new Set<string>(sameFirst);
+    // Associates and the newsroom float across every division, and each sheet
+    // records them under whichever spelling it used — "Yash" in one, "Yash
+    // Kotak" in another, "Rati Aggarwal" for "Rati Agrawal". For them a key
+    // sharing the first name is the same person when it is the bare first name,
+    // a longer form of a bare listed name, or a near-spelling of the full one;
+    // for anyone else that would be a guess.
+    if (FLOAT_POOLS.has(division)) {
+      const single = exact.split(/[\s.]+/).length === 1;
+      const all = new Set<string>(
+        sameFirst.filter((k) => single || !k.includes(' ') || editDistance(k, exact) <= 2),
+      );
       if (index.has(exact)) all.add(exact);
       if (index.has(resolved)) all.add(resolved);
       return [...all];
@@ -422,23 +465,17 @@ export class ResourcesService {
     return sameFirst.length === 1 ? sameFirst : [];
   }
 
-  private contentKey<V>(ctx: Ctx, index: Map<string, V>, name: string, division: string): string | null {
-    return this.contentKeys(ctx, index, name, division)[0] ?? null;
-  }
-
-  private piecesFor(ctx: Ctx, index: Map<string, CfPiece[]>, name: string, division: string): CfPiece[] {
+  private workFor(ctx: Ctx, index: Map<string, WorkItem[]>, name: string, division: string): WorkItem[] {
     const keys = this.contentKeys(ctx, index, name, division);
     if (keys.length === 1) return index.get(keys[0]) || [];
-    const out: CfPiece[] = [];
+    const out: WorkItem[] = [];
     const seen = new Set<string>();
-    for (const k of keys) for (const p of index.get(k) || []) if (!seen.has(p.id)) { seen.add(p.id); out.push(p); }
+    for (const k of keys) for (const w of index.get(k) || []) if (!seen.has(w.id)) { seen.add(w.id); out.push(w); }
     return out;
   }
 
-  private leaveOn(ctx: Ctx, lname: string): ResourceLeave | null {
-    const recs = ctx.leaves.byName.get(lname);
-    if (!recs) return null;
-    for (const l of recs) {
+  private leaveOn(ctx: Ctx, name: string): ResourceLeave | null {
+    for (const l of ctx.leavesFor(name)) {
       if (dateWithin(ctx.date, l.leaveStart, l.leaveEnd)) {
         return { from: l.leaveStart, to: l.leaveEnd, type: l.type };
       }
@@ -519,30 +556,33 @@ export class ResourcesService {
 
     const divisions = new Set<string>();
     for (const q of ctx.quotas) divisions.add(q.division);
-    for (const p of ctx.pieces) divisions.add(p.division);
+    for (const w of ctx.items) divisions.add(w.division);
+    for (const d of ctx.yahooQuota.keys()) divisions.add(d);
     divisions.delete('Unknown');
 
     const rows: DivisionResourceSummary[] = [];
     for (const division of [...divisions].sort()) {
       const quotas = ctx.quotas.filter((q) => q.division === division);
-      const pieces = ctx.pieces.filter((p) => p.division === division);
+      const work = ctx.items.filter((w) => w.division === division);
       const people = ctx.people.filter((p) => p.primaryDivision === division);
 
-      const today = pieces.filter((p) => submissionDay(p) === ctx.date);
-      const submittedEmp = today.filter((p) => submissionShift(p) === 'EMP').length;
+      // The DailyDynamics quota is the Critical Flow desk's; Yahoo sets its
+      // own, so each is measured against the pieces on its own sheet.
+      const today = work.filter((w) => onCfSheet(w) && submissionDay(w) === ctx.date);
+      const submittedEmp = today.filter((w) => submissionShift(w) === 'EMP').length;
       const submittedLnp = today.length - submittedEmp;
       const quotaEmp = quotas.reduce((s, q) => s + q.emp, 0);
       const quotaLnp = quotas.reduce((s, q) => s + q.lnp, 0);
       const quotaTotal = quotas.reduce((s, q) => s + q.total, 0);
+      const yahooWork = work.filter(onYahooSheet);
 
       let awaitingEditorial = 0, awaitingSubmission = 0, unassigned = 0, openSendBacks = 0;
-      for (const p of pieces) {
-        const st = pendingStage(p, ctx.now);
-        if (st === 'Awaiting Editorial') {
+      for (const w of work) {
+        if (w.pending === 'Awaiting Editorial') {
           awaitingEditorial++;
-          if (p.editor === 'Unknown') unassigned++;
-        } else if (st === 'Awaiting Submission') awaitingSubmission++;
-        else if (st === 'Sent Back') openSendBacks++;
+          if (!w.editors.length) unassigned++;
+        } else if (w.pending === 'Awaiting Submission') awaitingSubmission++;
+        else if (w.pending === 'Sent Back') openSendBacks++;
       }
 
       const writers = people.filter((p) => p.roleGroup === 'writer');
@@ -554,7 +594,7 @@ export class ResourcesService {
         .map((q) => ({
           subFeed: q.subFeed,
           quota: q.total,
-          submitted: today.filter((p) => subFeedOf(p) === q.subFeed).length,
+          submitted: today.filter((w) => w.subFeed === q.subFeed).length,
         }));
 
       const shiftQuota = ctx.shift === 'EMP' ? quotaEmp : quotaLnp;
@@ -570,9 +610,12 @@ export class ResourcesService {
           ? quotas.reduce((s, q) => s + (q.editorialChartTotal ?? q.total), 0)
           : null,
         submittedEmp, submittedLnp, submittedTotal: today.length,
-        publishedToday: pieces.filter((p) => p.publishedDate === ctx.date && isPublished(p)).length,
+        publishedToday: work.filter((w) => onCfSheet(w) && w.publishedDate === ctx.date && w.published).length,
         gapCurrentShift: Math.max(shiftQuota - shiftDone, 0),
         gapDay: Math.max(quotaTotal - today.length, 0),
+        yahooQuota: ctx.yahooQuota.get(division) ?? null,
+        yahooSubmitted: yahooWork.filter((w) => submissionDay(w) === ctx.date).length,
+        yahooPublished: yahooWork.filter((w) => w.publishedDate === ctx.date && w.published).length,
         awaitingEditorial, awaitingSubmission, unassignedEditorial: unassigned, openSendBacks,
         writersTotal: writers.length,
         writersOff: writers.filter((p) => p.offToday).length,
@@ -581,7 +624,7 @@ export class ResourcesService {
         editorsTotal: editors.length,
         editorsOff: editors.filter((p) => p.offToday).length,
         editorsFree: editors.filter((p) => p.status === 'Free').length,
-        undatedPieces: pieces.filter((p) => !p.date).length,
+        undatedPieces: work.filter((w) => !w.date).length,
         subFeeds,
       });
     }
@@ -598,6 +641,7 @@ export class ResourcesService {
         submitted: rows.reduce((s, r) => s + r.submittedTotal, 0),
         published: rows.reduce((s, r) => s + r.publishedToday, 0),
         gapDay: rows.reduce((s, r) => s + r.gapDay, 0),
+        yahooPublished: rows.reduce((s, r) => s + r.yahooPublished, 0),
         awaitingEditorial: rows.reduce((s, r) => s + r.awaitingEditorial, 0),
         writersFree: ctx.people.filter((p) => p.roleGroup === 'writer' && p.status === 'Free').length,
         editorsFree: ctx.people.filter((p) => p.roleGroup === 'editor' && p.status === 'Free').length,
@@ -608,10 +652,10 @@ export class ResourcesService {
 
   /**
    * Who could pick up work for `division` today. Scores favour the absent
-   * person's named backup, then the floating Associate pool, then people whose
-   * own division it is, then anyone with a track record there — and within
-   * each tier, whoever has the most room left. Every candidate carries the
-   * reasons it ranked, so the manager can see why rather than trust a number.
+   * person's named backup, then the floating pools, then people whose own
+   * division it is, then anyone with a track record there — and within each
+   * tier, whoever has the most room left. Every candidate carries the reasons
+   * it ranked, so the manager can see why rather than trust a number.
    */
   async suggest(params: {
     division: string; role?: string; forPerson?: string; date?: string;
@@ -635,13 +679,16 @@ export class ResourcesService {
       let score = 0;
       const reasons: string[] = [];
 
-      if (backupName && lower(p.name).split(/[\s.]+/)[0] === backupName.split(/[\s.]+/)[0]) {
+      if (backupName && firstToken(p.name) === firstToken(backupName)) {
         score += 100;
         reasons.push(`Named backup for ${absent!.name}`);
       }
       if (p.primaryDivision === 'Associate') {
         score += 60;
         reasons.push('Associate — floats across divisions');
+      } else if (p.primaryDivision === 'Newsroom') {
+        score += 40;
+        reasons.push('Newsroom — edits and publishes across divisions');
       }
       if (p.primaryDivision === division) {
         score += 50;
@@ -675,6 +722,7 @@ export class ResourcesService {
         score -= 25;
         reasons.push(`Currently ${p.status.toLowerCase()}`);
       }
+      if (p.employment === 'On notice') reasons.push('On notice');
       if (p.shift) reasons.push(`${p.shift} shift${p.shiftClock ? ` · ${p.shiftClock}` : ''}`);
 
       if (score <= 0 && !reasons.length) continue;
@@ -692,8 +740,9 @@ export class ResourcesService {
   }
 
   async getHealth(): Promise<ScheduleHealthResult> {
-    const [sched, leaves, quotas, pieces] = await Promise.all([
-      this.schedRepo.find(), this.leaveRepo.find(), this.quotaRepo.find(), this.pieceRepo.find(),
+    const ctx = await this.buildContext();
+    const [sched, leaves, quotas, yp] = await Promise.all([
+      this.peopleRepo.find(), this.leaveRepo.find(), this.quotaRepo.find(), this.ypRepo.find(),
     ]);
     const flags: ScheduleHealthFlag[] = [];
     const push = (issue: string, items: string[], detail: string) => {
@@ -706,47 +755,71 @@ export class ResourcesService {
       'Writer Info lists them as a writer; Editor Info / Roles & Contact list them as an editor. Treated as an editor.',
     );
     push(
+      'Marked exited but still listed',
+      sched.filter((s) => s.flags.includes('exited')).map((s) => `${s.name} (${s.primaryDivision})`),
+      'Roles & Contact\'s exit list names them, but Writer Info or Editor Info still has them. Shown as inactive.',
+    );
+    push(
       'Quota differs between DailyDynamics and Editorial Chart',
       quotas.filter((q) => q.editorialChartTotal != null)
         .map((q) => `${q.sourceName}: ${q.total} vs ${q.editorialChartTotal}`),
       'DailyDynamics is used; the Editorial Chart figure is shown alongside on the summary.',
     );
-    const names = new Set(sched.map((s) => lower(s.name)));
-    const firsts = new Set(sched.map((s) => lower(s.name).split(/[\s.]+/)[0]));
+    const attached = new Set<string>();
+    for (const s of sched) for (const l of ctx.leavesFor(s.name)) attached.add(l.id);
     push(
       'Leave logged for a name not on any schedule tab',
-      [...new Set(leaves.filter((l) => !names.has(lower(l.name)) && !firsts.has(lower(l.name).split(/[\s.]+/)[0]))
-        .map((l) => l.name))],
-      'These leave records cannot be attached to a person and will not mark anyone Off.',
+      [...new Set(leaves.filter((l) => !attached.has(l.id)).map((l) => l.name))],
+      'These leave records cannot be attached to one person, so they will not mark anyone Off. A first name alone only attaches when nobody else shares it.',
     );
-    if (leaves.length && !leaves.some((l) => l.roleTag === 'writer')) {
+    if (!leaves.some((l) => l.roleTag === 'writer')) {
       flags.push({
-        issue: 'Writer leave log is empty',
+        issue: 'No writer leave recorded',
         count: 1,
-        detail: 'Only editor leave is being recorded. Writers will never show as On leave until it is used.',
+        detail: 'CF Writer Leaves has nothing recent. Writers will never show as On leave until it is used.',
         items: [],
       });
     }
     const undatedByDiv = new Map<string, number>();
-    for (const p of pieces) if (!p.date) undatedByDiv.set(p.division, (undatedByDiv.get(p.division) ?? 0) + 1);
+    for (const w of ctx.items) if (!w.date) undatedByDiv.set(w.division, (undatedByDiv.get(w.division) ?? 0) + 1);
     push(
       'Pieces with no timestamps',
       [...undatedByDiv.entries()].sort((a, b) => b[1] - a[1]).map(([d, n]) => `${d}: ${n}`),
       'These cannot count toward anyone\'s output today, so those writers will look quieter than they are.',
     );
-    const divisionsWithContent = new Set(pieces.map((p) => p.division));
     const quotaDivs = new Set(quotas.map((q) => q.division));
     push(
-      'Division with content but no quota',
-      [...divisionsWithContent].filter((d) => d !== 'Unknown' && !quotaDivs.has(d)),
+      'Division with Critical Flow content but no quota',
+      [...new Set(ctx.items.filter(onCfSheet).map((w) => w.division))]
+        .filter((d) => d !== 'Unknown' && !quotaDivs.has(d)),
       'Gap-to-quota cannot be computed for these.',
     );
+    const unknownYahoo = new Map<string, number>();
+    for (const y of yp) {
+      if (!parseDivisions(y.division).length) unknownYahoo.set(y.division, (unknownYahoo.get(y.division) ?? 0) + 1);
+    }
+    push(
+      'Yahoo division label not recognised',
+      [...unknownYahoo.entries()].sort((a, b) => b[1] - a[1]).map(([d, n]) => `${d || '(blank)'}: ${n}`),
+      'These Yahoo pieces cannot be placed in a board division, so they count for their people but not for any division card.',
+    );
 
-    // Two spellings of what is almost certainly one person inside a division
-    // ("Maleeha Shakeel" on the roster, "Maleehah Shakeel" on the schedule).
+    const unlisted = ctx.people
+      .filter((p) => p.flags.includes('unlisted'))
+      .map((p) => ({
+        label: `${p.name} (${p.primaryDivision})`,
+        pieces: [...(ctx.worked.get(lower(p.name))?.values() ?? [])].reduce((a, b) => a + b, 0),
+      }))
+      .sort((a, b) => b.pieces - a.pieces);
+    push(
+      'Working but not on the schedule',
+      unlisted.map((u) => `${u.label} ×${u.pieces}`),
+      'Writing or editing on the content sheets, but not in Writer Info, Editor Info or Roles & Contact. Add them there so leave, shift and backup apply — until then they show with no schedule details.',
+    );
+
+    // Two spellings of what is almost certainly one person inside a division.
     // Not merged — a one-letter difference is usually a typo but is sometimes
     // two people — so it is raised for the sheets to settle.
-    const ctx = await this.buildContext();
     const similar: string[] = [];
     const byDiv = new Map<string, string[]>();
     for (const p of ctx.people) {
@@ -758,9 +831,15 @@ export class ResourcesService {
         for (let j = i + 1; j < names.length; j++) {
           const a = lower(names[i]);
           const b = lower(names[j]);
-          const sameFirst = a.split(/[\s.]+/)[0] === b.split(/[\s.]+/)[0];
-          // Same first name, or a one-character slip anywhere in a longish name.
-          if (sameFirst || (a.length >= 6 && editDistance(a, b) <= 1)) {
+          const fa = firstToken(a);
+          const fb = firstToken(b);
+          // Same first name, a one-letter slip in the first name ("Maleeha" /
+          // "Maleehah Shakeel"), or a one-letter slip anywhere in a longish name.
+          if (
+            fa === fb ||
+            (fa.length >= 5 && editDistance(fa, fb) <= 1) ||
+            (a.length >= 6 && editDistance(a, b) <= 1)
+          ) {
             similar.push(`${division}: ${names[i]} / ${names[j]}`);
           }
         }
@@ -772,8 +851,11 @@ export class ResourcesService {
       'Probably one person spelt two ways across sheets; counted separately until the spellings match.',
     );
 
+    const status = this.sync.getStatus();
     return {
-      scheduleSheetConfigured: !!process.env.CF_SCHEDULE_SHEET_ID,
+      sheetConfigured: status.sheetConfigured,
+      lastSyncTime: status.lastSyncTime,
+      syncError: status.error,
       people: sched.length,
       leaves: leaves.length,
       quotas: quotas.length,
@@ -785,16 +867,15 @@ export class ResourcesService {
 
   async getProfiles(): Promise<ResourceProfile[]> {
     const ctx = await this.buildContext();
-    const byKey = ctx.profiles;
     return ctx.people
       .filter((p) => p.roleGroup === 'writer' || p.roleGroup === 'editor')
       .map((p) => {
-        const pr = byKey.get(p.key);
+        const pr = ctx.profileFor(p.primaryDivision, p.name);
         return {
           key: p.key,
           division: p.primaryDivision,
           name: p.name,
-          dailyQuota: pr?.dailyQuota ?? p.quota,
+          dailyQuota: pr?.dailyQuota ?? null,
           notes: pr?.notes ?? '',
           updatedAt: pr?.updatedAt ? new Date(pr.updatedAt).toISOString() : null,
         };
@@ -806,7 +887,7 @@ export class ResourcesService {
     if (!Array.isArray(list) || list.length === 0) {
       throw new BadRequestException('`profiles` must be a non-empty array');
     }
-    const rows: CfResourceProfile[] = [];
+    const rows: ResProfile[] = [];
     for (const raw of list) {
       const key = String(raw?.key ?? '').trim();
       const [division, ...rest] = key.split('|');
@@ -818,7 +899,7 @@ export class ResourcesService {
       if (dailyQuota != null && !Number.isFinite(dailyQuota)) {
         throw new BadRequestException(`Bad dailyQuota for ${key}`);
       }
-      const e = new CfResourceProfile();
+      const e = new ResProfile();
       e.id = key;
       e.division = division;
       e.name = name;
@@ -829,11 +910,55 @@ export class ResourcesService {
     await this.profileRepo.upsert(rows, ['id']);
     return { updated: rows.length, profiles: await this.getProfiles() };
   }
+
+  /**
+   * The retired Division Info rosters recorded per-writer daily targets
+   * (College Football, NFL) that the schedule workbook does not carry. Copied
+   * once into profiles so those quotas survive the switch; a person who already
+   * has a profile is left alone, so this is safe to run on every boot until the
+   * old cf_roster table is dropped.
+   */
+  private async carryOverRosterTargets(): Promise<void> {
+    let legacy: { division: string; name: string; dailyTarget: number }[];
+    try {
+      legacy = await this.profileRepo.query(
+        'SELECT division, name, "dailyTarget" FROM cf_roster WHERE "dailyTarget" IS NOT NULL',
+      );
+    } catch {
+      return; // table already dropped
+    }
+    if (!legacy.length) return;
+
+    const ctx = await this.buildContext();
+    const rows = new Map<string, ResProfile>();
+    let unmatched = 0;
+    for (const l of legacy) {
+      const want = lower(ctx.resolve(l.name, l.division));
+      const candidates = ctx.people.filter((p) => lower(ctx.resolve(p.name, l.division)) === want);
+      const person =
+        candidates.find((p) => p.primaryDivision === l.division) ??
+        (candidates.length === 1 ? candidates[0] : undefined);
+      if (!person) { unmatched++; continue; }
+      if (rows.has(person.key) || ctx.profileFor(person.primaryDivision, person.name)) continue;
+      const e = new ResProfile();
+      e.id = person.key;
+      e.division = person.primaryDivision;
+      e.name = person.name;
+      e.dailyQuota = Math.max(0, Math.round(Number(l.dailyTarget)));
+      e.notes = 'Daily target carried over from the Division Info roster';
+      rows.set(person.key, e);
+    }
+    if (rows.size) {
+      await this.profileRepo.upsert([...rows.values()], ['id']);
+      this.logger.log(`Carried over ${rows.size} roster daily targets into profiles`);
+    }
+    if (unmatched) this.logger.warn(`${unmatched} roster daily targets matched no one on the board`);
+  }
 }
 
-/** Levenshtein distance, capped early — only "is it ≤ 1" matters here. */
+/** Levenshtein distance, short-circuited when the lengths alone put it above 2. */
 function editDistance(a: string, b: string): number {
-  if (Math.abs(a.length - b.length) > 1) return 2;
+  if (Math.abs(a.length - b.length) > 2) return 3;
   const prev = new Array(b.length + 1).fill(0).map((_, i) => i);
   for (let i = 1; i <= a.length; i++) {
     let left = i;
