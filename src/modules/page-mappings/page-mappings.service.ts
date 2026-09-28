@@ -8,6 +8,35 @@ import { normalizeExplicitUrl } from '../../common/page-links';
 import { splitPastedMedium } from '../../common/page-mapping-match';
 import * as readline from 'readline';
 
+type CsvField =
+  | 'category'
+  | 'team'
+  | 'platform'
+  | 'pageName'
+  | 'utmSource'
+  | 'utmMediums'
+  | 'utmCampaign'
+  | 'utmTerm'
+  | 'pageUrl';
+
+type CsvColumnIndex = Partial<Record<CsvField, number>>;
+type CsvMappingRow = Partial<Record<CsvField, string>> & { pageName: string };
+
+// Keyed by the header with case, spaces and punctuation stripped, so
+// 'pageName', 'Page Name' and 'page_name' all land on the same field.
+const CSV_HEADER_FIELDS: Record<string, CsvField> = {
+  category: 'category',
+  team: 'team',
+  platform: 'platform',
+  pagename: 'pageName',
+  utmsource: 'utmSource',
+  utmmediums: 'utmMediums',
+  utmmedium: 'utmMediums',
+  utmcampaign: 'utmCampaign',
+  utmterm: 'utmTerm',
+  pageurl: 'pageUrl',
+};
+
 @Injectable()
 export class PageMappingsService {
   constructor(
@@ -230,72 +259,55 @@ export class PageMappingsService {
     });
 
     let isHeader = true;
+    let columns: CsvColumnIndex | null = null;
     const mappings: Partial<PageMapping>[] = [];
 
     for await (const line of rl) {
       if (!line.trim()) continue;
 
+      const values = this.parseCSVLine(line);
+
       if (isHeader) {
         isHeader = false;
+        columns = this.readCsvHeader(values);
         continue;
       }
 
-      const values = this.parseCSVLine(line);
+      const row = columns
+        ? this.pickCsvByHeader(values, columns)
+        : this.pickCsvByWidth(values);
+      if (!row || !row.pageName?.trim()) continue;
 
-      if (values.length >= 6) {
-        // Three generations of the export are accepted, distinguished by width:
-        //   6 cols: id, category, platform, pageName, utmSource, utmMediums
-        //   7 cols: + team as the 3rd column
-        //   8 cols: + pageUrl last (the click-through override)
-        let category: string,
-          team: string | null,
-          platform: string,
-          pageName: string,
-          utmSource: string,
-          utmMediumsStr: string,
-          pageUrl: string | null;
+      const cleanedMediumsStr = (row.utmMediums || '').replace(/^\{|\}$/g, '');
 
-        if (values.length >= 7) {
-          [, category, team, platform, pageName, utmSource, utmMediumsStr] =
-            values;
-          pageUrl = values.length >= 8 ? values[7] : null;
-        } else {
-          [, category, platform, pageName, utmSource, utmMediumsStr] = values;
-          team = null;
-          pageUrl = null;
-        }
+      // A pasted medium can carry its own query-string tail
+      // ('x&utm_campaign=threads&utm_term=autopost'). Split it, keep the
+      // medium, and lift the campaign/term onto the row when the file has no
+      // column of its own for them — that campaign is what separates a page's
+      // autoposted traffic from its normal posts.
+      let liftedCampaign: string | null = null;
+      let liftedTerm: string | null = null;
+      const mediumsArray = cleanedMediumsStr
+        .split(',')
+        .map((m) => {
+          const { medium, campaign, term } = splitPastedMedium(m);
+          if (campaign && !liftedCampaign) liftedCampaign = campaign;
+          if (term && !liftedTerm) liftedTerm = term.trim() || null;
+          return medium;
+        })
+        .filter(Boolean);
 
-        let cleanedMediumsStr = utmMediumsStr || '';
-        cleanedMediumsStr = cleanedMediumsStr.replace(/^\{|\}$/g, '');
-
-        // A pasted medium can carry its own query-string tail
-        // ('x&utm_campaign=threads&utm_term=autopost'). Split it, keep the
-        // medium, and lift the campaign onto the row — that campaign is what
-        // separates a page's autoposted traffic from its normal posts.
-        let importedCampaign: string | null = null;
-        let importedTerm: string | null = null;
-        const mediumsArray = cleanedMediumsStr
-          .split(',')
-          .map((m) => {
-            const { medium, campaign, term } = splitPastedMedium(m);
-            if (campaign && !importedCampaign) importedCampaign = campaign;
-            if (term && !importedTerm) importedTerm = term.trim() || null;
-            return medium;
-          })
-          .filter(Boolean);
-
-        mappings.push({
-          category: category?.trim(),
-          team: team?.trim() || null,
-          platform: platform?.trim(),
-          pageName: pageName?.trim(),
-          utmSource: utmSource?.trim(),
-          utmMediums: mediumsArray,
-          utmCampaign: importedCampaign,
-          utmTerm: importedTerm,
-          pageUrl: normalizeExplicitUrl(pageUrl),
-        });
-      }
+      mappings.push({
+        category: row.category?.trim() ?? '',
+        team: row.team?.trim() || null,
+        platform: row.platform?.trim() ?? '',
+        pageName: row.pageName.trim(),
+        utmSource: row.utmSource?.trim() ?? '',
+        utmMediums: mediumsArray,
+        utmCampaign: row.utmCampaign?.trim() || liftedCampaign,
+        utmTerm: row.utmTerm?.trim() || liftedTerm,
+        pageUrl: normalizeExplicitUrl(row.pageUrl),
+      });
     }
 
     if (mappings.length > 0) {
@@ -303,6 +315,70 @@ export class PageMappingsService {
     }
 
     return mappings.length;
+  }
+
+  /**
+   * Map header names to column positions, so a file imports correctly
+   * whatever columns it has and in whatever order.
+   *
+   * Returns null when the header doesn't name the page and its mediums — an
+   * old or hand-made file — and the row is read by width instead.
+   */
+  private readCsvHeader(header: string[]): CsvColumnIndex | null {
+    const columns: CsvColumnIndex = {};
+    header.forEach((raw, i) => {
+      // Also drops a byte-order mark, which Excel prepends to the first cell.
+      const key = raw.toLowerCase().replace(/[^a-z]/g, '');
+      const field = CSV_HEADER_FIELDS[key];
+      if (field && columns[field] === undefined) columns[field] = i;
+    });
+    return columns.pageName !== undefined && columns.utmMediums !== undefined
+      ? columns
+      : null;
+  }
+
+  private pickCsvByHeader(
+    values: string[],
+    columns: CsvColumnIndex,
+  ): CsvMappingRow {
+    const at = (field: CsvField) => {
+      const i = columns[field];
+      return i === undefined ? undefined : values[i];
+    };
+    return {
+      category: at('category'),
+      team: at('team'),
+      platform: at('platform'),
+      pageName: at('pageName') ?? '',
+      utmSource: at('utmSource'),
+      utmMediums: at('utmMediums'),
+      utmCampaign: at('utmCampaign'),
+      utmTerm: at('utmTerm'),
+      pageUrl: at('pageUrl'),
+    };
+  }
+
+  // Files whose header doesn't name the columns: older exports, read by width.
+  //   6 cols: id, category, platform, pageName, utmSource, utmMediums
+  //   7 cols: + team as the 3rd column
+  //   8 cols: + pageUrl last (the click-through override)
+  private pickCsvByWidth(values: string[]): CsvMappingRow | null {
+    if (values.length < 6) return null;
+    if (values.length >= 7) {
+      const [, category, team, platform, pageName, utmSource, utmMediums] =
+        values;
+      return {
+        category,
+        team,
+        platform,
+        pageName,
+        utmSource,
+        utmMediums,
+        pageUrl: values.length >= 8 ? values[7] : undefined,
+      };
+    }
+    const [, category, platform, pageName, utmSource, utmMediums] = values;
+    return { category, platform, pageName, utmSource, utmMediums };
   }
 
   private parseCSVLine(text: string): string[] {
@@ -315,14 +391,14 @@ export class PageMappingsService {
       } else if (text[i] === ',' && !inQuotes) {
         let field = text.substring(start, i).trim();
         if (field.startsWith('"') && field.endsWith('"'))
-          field = field.slice(1, -1);
+          field = field.slice(1, -1).replace(/""/g, '"');
         result.push(field);
         start = i + 1;
       }
     }
     let lastField = text.substring(start).trim();
     if (lastField.startsWith('"') && lastField.endsWith('"'))
-      lastField = lastField.slice(1, -1);
+      lastField = lastField.slice(1, -1).replace(/""/g, '"');
     result.push(lastField);
     return result;
   }
