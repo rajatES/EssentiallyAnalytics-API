@@ -119,13 +119,16 @@ export function resolveMapping(
  *
  * Also accepts a whole link ('?utm_source=…&utm_medium=x&utm_campaign=y') and
  * a bare medium, so every paste shape a person might use lands correctly.
+ *
+ * The term is returned for the mapping row's label; nothing matches on it.
  */
 export function splitPastedMedium(raw: string): {
   medium: string;
   campaign: string | null;
+  term: string | null;
 } {
   let value = (raw || '').trim();
-  if (!value) return { medium: '', campaign: null };
+  if (!value) return { medium: '', campaign: null, term: null };
 
   // A full link, or any string that still carries its own utm_medium= key.
   if (value.includes('utm_medium=')) {
@@ -133,7 +136,11 @@ export function splitPastedMedium(raw: string): {
     const params = new URLSearchParams(qs.replace(/^[?&]/, ''));
     const medium = params.get('utm_medium');
     if (medium) {
-      return { medium: medium.trim(), campaign: params.get('utm_campaign') };
+      return {
+        medium: medium.trim(),
+        campaign: params.get('utm_campaign'),
+        term: params.get('utm_term'),
+      };
     }
   }
 
@@ -145,8 +152,9 @@ export function splitPastedMedium(raw: string): {
     return {
       medium: head.trim(),
       campaign: params.get('utm_campaign'),
+      term: params.get('utm_term'),
     };
   }
 
-  return { medium: value, campaign: null };
+  return { medium: value, campaign: null, term: null };
 }

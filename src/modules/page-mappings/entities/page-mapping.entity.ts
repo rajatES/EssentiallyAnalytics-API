@@ -34,6 +34,14 @@ export class PageMapping {
   utmCampaign: string | null;
 
   /**
+   * The link's utm_term (e.g. 'autopost' for the automation division's posts),
+   * so the mappings screen can show which row is which. A label only — it plays
+   * no part in matching, because utm_term never reaches the traffic warehouse.
+   */
+  @Column({ type: 'varchar', nullable: true, default: null })
+  utmTerm: string | null;
+
+  /**
    * Manually entered click-through URL, overriding whatever the page directory
    * resolves by name. Traffic rows carry no platform identifier of their own,
    * so this is the only way to link a page Meta never told us about — every

@@ -98,7 +98,7 @@ export class PageMappingsService {
 
   create(mapping: Partial<PageMapping>) {
     const newMapping = this.mappingRepository.create(
-      this.normalizeMediums(this.normalizeUrl(mapping)),
+      this.normalizeMediums(this.normalizeTerm(this.normalizeUrl(mapping))),
     );
     return this.mappingRepository.save(newMapping);
   }
@@ -109,8 +109,8 @@ export class PageMappingsService {
    * People paste the tail of a tracking link — 'x&utm_campaign=threads&
    * utm_term=autopost' — or occasionally the whole link. Stored verbatim, that
    * never matches a traffic row, because the warehouse holds just 'x'. So split
-   * it: the medium stays in utmMediums, and any campaign found is lifted onto
-   * utmCampaign (unless the caller set one explicitly).
+   * it: the medium stays in utmMediums, and any campaign or term found is
+   * lifted onto utmCampaign / utmTerm (unless the caller set one explicitly).
    */
   private normalizeMediums(
     partial: Partial<PageMapping>,
@@ -118,10 +118,12 @@ export class PageMappingsService {
     if (!Array.isArray(partial.utmMediums)) return partial;
 
     let derivedCampaign: string | null = null;
+    let derivedTerm: string | null = null;
     const mediums = partial.utmMediums
       .map((raw) => {
-        const { medium, campaign } = splitPastedMedium(String(raw ?? ''));
+        const { medium, campaign, term } = splitPastedMedium(String(raw ?? ''));
         if (campaign && !derivedCampaign) derivedCampaign = campaign;
+        if (term && !derivedTerm) derivedTerm = term.trim() || null;
         return medium;
       })
       .filter(Boolean);
@@ -130,7 +132,17 @@ export class PageMappingsService {
     const explicit =
       typeof out.utmCampaign === 'string' ? out.utmCampaign.trim() : null;
     out.utmCampaign = explicit || derivedCampaign || null;
+    if (!out.utmTerm && derivedTerm) out.utmTerm = derivedTerm;
     return out;
+  }
+
+  private normalizeTerm(partial: Partial<PageMapping>): Partial<PageMapping> {
+    if (!('utmTerm' in partial)) return partial;
+    const t = partial.utmTerm;
+    return {
+      ...partial,
+      utmTerm: typeof t === 'string' && t.trim() ? t.trim() : null,
+    };
   }
 
   /**
@@ -154,7 +166,9 @@ export class PageMappingsService {
       const t = partial.team;
       partial.team = typeof t === 'string' && t.trim() ? t.trim() : null;
     }
-    partial = this.normalizeMediums(this.normalizeUrl(partial));
+    partial = this.normalizeMediums(
+      this.normalizeTerm(this.normalizeUrl(partial)),
+    );
     await this.mappingRepository.update(id, partial);
 
     // If team was changed, cascade to ALL rows with the same pageName so that
@@ -259,11 +273,13 @@ export class PageMappingsService {
         // medium, and lift the campaign onto the row — that campaign is what
         // separates a page's autoposted traffic from its normal posts.
         let importedCampaign: string | null = null;
+        let importedTerm: string | null = null;
         const mediumsArray = cleanedMediumsStr
           .split(',')
           .map((m) => {
-            const { medium, campaign } = splitPastedMedium(m);
+            const { medium, campaign, term } = splitPastedMedium(m);
             if (campaign && !importedCampaign) importedCampaign = campaign;
+            if (term && !importedTerm) importedTerm = term.trim() || null;
             return medium;
           })
           .filter(Boolean);
@@ -276,6 +292,7 @@ export class PageMappingsService {
           utmSource: utmSource?.trim(),
           utmMediums: mediumsArray,
           utmCampaign: importedCampaign,
+          utmTerm: importedTerm,
           pageUrl: normalizeExplicitUrl(pageUrl),
         });
       }
