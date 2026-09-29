@@ -128,11 +128,23 @@ export class PageMappingsController {
     }
 
     try {
-      const count = await this.service.importFromCSV(file.buffer);
-      return {
-        status: 'success',
-        message: `Imported ${count} page mappings successfully.`,
-      };
+      const { imported, skipped } = await this.service.importFromCSV(
+        file.buffer,
+      );
+      let message = `Imported ${imported} page mappings successfully.`;
+      const rowsByReason = new Map<string, number[]>();
+      for (const s of skipped) {
+        rowsByReason.set(s.reason, [
+          ...(rowsByReason.get(s.reason) ?? []),
+          s.row,
+        ]);
+      }
+      for (const [reason, rows] of rowsByReason) {
+        const shown = rows.slice(0, 10).join(', ');
+        const more = rows.length > 10 ? ` and ${rows.length - 10} more` : '';
+        message += ` Skipped row${rows.length > 1 ? 's' : ''} ${shown}${more}: ${reason}.`;
+      }
+      return { status: 'success', message };
     } catch (error) {
       throw new HttpException(
         error instanceof Error ? error.message : 'Import failed',

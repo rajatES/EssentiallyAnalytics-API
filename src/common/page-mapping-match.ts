@@ -158,3 +158,38 @@ export function splitPastedMedium(raw: string): {
 
   return { medium: value, campaign: null, term: null };
 }
+
+export interface ParsedTrackingLink {
+  source: string | null;
+  medium: string;
+  campaign: string | null;
+  term: string | null;
+}
+
+/**
+ * Break a whole tracking link into the fields a page mapping needs.
+ *
+ * Accepts the full link, just its query string ('?utm_source=threads&…'), or
+ * the tail that follows 'utm_medium='. Used by the mappings form's Tracking
+ * Link box and by the CSV importer's trackingLink column, so a link splits the
+ * same way however it arrives. Returns null when no utm_medium can be found.
+ */
+export function parseTrackingLink(raw: string): ParsedTrackingLink | null {
+  // Links copied out of HTML or a chat preview often carry '&amp;' and a
+  // '#fragment', neither of which belongs to any utm value.
+  const text = (raw || '').trim().replace(/&amp;/gi, '&').split('#')[0];
+  if (!/utm_/i.test(text)) return null;
+
+  const { medium, campaign, term } = splitPastedMedium(text);
+  if (!medium || medium.includes('=')) return null;
+
+  const query = text.includes('?') ? text.slice(text.indexOf('?') + 1) : text;
+  const source = new URLSearchParams(query).get('utm_source');
+
+  return {
+    source: source?.trim() || null,
+    medium,
+    campaign: campaign?.trim() || null,
+    term: term?.trim() || null,
+  };
+}

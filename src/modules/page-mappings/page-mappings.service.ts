@@ -5,7 +5,11 @@ import { PageMapping } from './entities/page-mapping.entity';
 import { PagePathMapping } from './entities/page-path-mapping.entity';
 import { Readable } from 'stream';
 import { normalizeExplicitUrl } from '../../common/page-links';
-import { splitPastedMedium } from '../../common/page-mapping-match';
+import {
+  parseTrackingLink,
+  splitPastedMedium,
+} from '../../common/page-mapping-match';
+import { platformForSource } from '../../common/traffic-platforms';
 import * as readline from 'readline';
 
 type CsvField =
@@ -17,7 +21,8 @@ type CsvField =
   | 'utmMediums'
   | 'utmCampaign'
   | 'utmTerm'
-  | 'pageUrl';
+  | 'pageUrl'
+  | 'trackingLink';
 
 type CsvColumnIndex = Partial<Record<CsvField, number>>;
 type CsvMappingRow = Partial<Record<CsvField, string>> & { pageName: string };
@@ -35,6 +40,14 @@ const CSV_HEADER_FIELDS: Record<string, CsvField> = {
   utmcampaign: 'utmCampaign',
   utmterm: 'utmTerm',
   pageurl: 'pageUrl',
+  // The whole link, split into source/medium/campaign/term on import. 'url'
+  // is safe to claim: the page's click-through link is always 'pageUrl'.
+  trackinglink: 'trackingLink',
+  trackingurl: 'trackingLink',
+  utmlink: 'trackingLink',
+  link: 'trackingLink',
+  url: 'trackingLink',
+  utm: 'trackingLink',
 };
 
 @Injectable()
@@ -261,8 +274,11 @@ export class PageMappingsService {
     let isHeader = true;
     let columns: CsvColumnIndex | null = null;
     const mappings: Partial<PageMapping>[] = [];
+    const skipped: { row: number; reason: string }[] = [];
+    let rowNumber = 0;
 
     for await (const line of rl) {
+      rowNumber++;
       if (!line.trim()) continue;
 
       const values = this.parseCSVLine(line);
@@ -297,15 +313,50 @@ export class PageMappingsService {
         })
         .filter(Boolean);
 
+      // A row that gives a link is described by it. One whose link can't be
+      // read, or names a different medium than its utmMediums column, is
+      // skipped and reported: importing the rest would pin a campaign on the
+      // wrong medium, or leave a catch-all that swallows the page's autopost
+      // traffic.
+      const rawLink = row.trackingLink?.trim() ?? '';
+      const link = rawLink ? parseTrackingLink(rawLink) : null;
+      if (rawLink && !link) {
+        skipped.push({
+          row: rowNumber,
+          reason: 'the tracking link has no utm_medium',
+        });
+        continue;
+      }
+      if (
+        link &&
+        mediumsArray.length &&
+        !mediumsArray.some((m) => m.toLowerCase() === link.medium.toLowerCase())
+      ) {
+        skipped.push({
+          row: rowNumber,
+          reason: "the tracking link's utm_medium isn't in utmMediums",
+        });
+        continue;
+      }
+      const linkPlatform = platformForSource(link?.source);
+
+      // Columns the file fills in win; the link only fills the blanks. Source
+      // and platform are stored the way the mappings form stores them.
       mappings.push({
         category: row.category?.trim() ?? '',
         team: row.team?.trim() || null,
-        platform: row.platform?.trim() ?? '',
+        platform: row.platform?.trim() || linkPlatform?.label || '',
         pageName: row.pageName.trim(),
-        utmSource: row.utmSource?.trim() ?? '',
-        utmMediums: mediumsArray,
-        utmCampaign: row.utmCampaign?.trim() || liftedCampaign,
-        utmTerm: row.utmTerm?.trim() || liftedTerm,
+        utmSource:
+          row.utmSource?.trim() || linkPlatform?.key || link?.source || '',
+        utmMediums: mediumsArray.length
+          ? mediumsArray
+          : link
+            ? [link.medium]
+            : [],
+        utmCampaign:
+          row.utmCampaign?.trim() || liftedCampaign || link?.campaign || null,
+        utmTerm: row.utmTerm?.trim() || liftedTerm || link?.term || null,
         pageUrl: normalizeExplicitUrl(row.pageUrl),
       });
     }
@@ -314,15 +365,16 @@ export class PageMappingsService {
       await this.mappingRepository.save(mappings);
     }
 
-    return mappings.length;
+    return { imported: mappings.length, skipped };
   }
 
   /**
    * Map header names to column positions, so a file imports correctly
    * whatever columns it has and in whatever order.
    *
-   * Returns null when the header doesn't name the page and its mediums — an
-   * old or hand-made file — and the row is read by width instead.
+   * Returns null when the header doesn't name the page and either its mediums
+   * or a tracking link — an old or hand-made file — and the row is read by
+   * width instead.
    */
   private readCsvHeader(header: string[]): CsvColumnIndex | null {
     const columns: CsvColumnIndex = {};
@@ -332,7 +384,8 @@ export class PageMappingsService {
       const field = CSV_HEADER_FIELDS[key];
       if (field && columns[field] === undefined) columns[field] = i;
     });
-    return columns.pageName !== undefined && columns.utmMediums !== undefined
+    return columns.pageName !== undefined &&
+      (columns.utmMediums !== undefined || columns.trackingLink !== undefined)
       ? columns
       : null;
   }
@@ -355,6 +408,7 @@ export class PageMappingsService {
       utmCampaign: at('utmCampaign'),
       utmTerm: at('utmTerm'),
       pageUrl: at('pageUrl'),
+      trackingLink: at('trackingLink'),
     };
   }
 
