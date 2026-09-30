@@ -3,6 +3,7 @@ import { google } from 'googleapis';
 import { ParsedYpPiece, ParsedYpQuota } from './types';
 import {
   clean,
+  PARSE_VERSION,
   computeRowHash,
   isValidPiece,
   normalizeArticleType,
@@ -15,6 +16,13 @@ import {
   parseNumber,
   toDateOnly,
 } from '../production/normalization';
+
+/** How far the hand-typed work date may sit from the automated stamps. */
+const WORK_DATE_TOLERANCE_DAYS = 21;
+
+function daysApart(a: string, b: string): number {
+  return (Date.parse(`${a}T00:00:00Z`) - Date.parse(`${b}T00:00:00Z`)) / 86400000;
+}
 
 type PieceKey =
   | 'id' | 'uniquePieceId' | 'division' | 'month' | 'workDate' | 'allottedBy'
@@ -183,7 +191,7 @@ export class YpSheetsSyncService {
           quota: parseNumber(col.quota === undefined ? null : row[col.quota]),
           window: text(row, 'window'),
           poc: text(row, 'poc'),
-          rawHash: computeRowHash(row),
+          rawHash: computeRowHash([PARSE_VERSION, ...row]),
         });
       }
       return parsed;
@@ -215,9 +223,18 @@ export class YpSheetsSyncService {
     const publishedAt = parseDateTime(raw('publishedAt'));
     const liveAt = parseDateTime(raw('liveAt'));
 
+    // The Date column is typed by hand; the stamps are written by the sheet's
+    // script. Three weeks apart means the hand-typed date is the typo ("25/06"
+    // for "25/09") — a slow piece runs days late, a wrong month is four weeks
+    // off — so the stamp's day wins, and the allotment time built on the bad
+    // date goes with it. A wrong year (3036) is already rejected as unparseable.
     const workDate = parseDateOnly(raw('workDate'));
-    const anchor = allottedAt || submittedAt || publishedAt || liveAt || null;
-    const date = workDate ?? toDateOnly(anchor);
+    const stampDay = toDateOnly(submittedAt || publishedAt || liveAt || null);
+    const workDateOk =
+      !workDate || !stampDay || Math.abs(daysApart(workDate, stampDay)) <= WORK_DATE_TOLERANCE_DAYS;
+    const allotted = workDateOk ? allottedAt : null;
+    const anchor = allotted || submittedAt || publishedAt || liveAt || null;
+    const date = (workDateOk ? workDate : stampDay) ?? toDateOnly(anchor);
 
     const parsed: ParsedYpPiece = {
       id,
@@ -231,14 +248,14 @@ export class YpSheetsSyncService {
       enhancement: text('enhancement'),
       editorialStatus: normalizeStatus(text('editorialStatus')),
       wpStatus: text('wpStatus'),
-      allottedAt,
+      allottedAt: allotted,
       submittedAt,
       editorAt: publishedAt,
       liveAt,
       wpCheckedAt: parseDateTime(raw('wpCheckedAt')),
       publishedDate: toDateOnly(publishedAt) ?? toDateOnly(liveAt),
       date,
-      tatHours: parseNumber(raw('tatHours')),
+      tatHours: workDateOk ? parseNumber(raw('tatHours')) : null,
       title,
       titleNorm: normalizeTitleKey(title),
       source: text('source'),
@@ -246,7 +263,7 @@ export class YpSheetsSyncService {
       writerComments: text('writerComments'),
       editorComment: text('editorComment'),
       plagReport: text('plagReport'),
-      rawHash: computeRowHash(row),
+      rawHash: computeRowHash([PARSE_VERSION, ...row]),
     };
 
     return isValidPiece(parsed) ? parsed : null;

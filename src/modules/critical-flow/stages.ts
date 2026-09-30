@@ -28,12 +28,19 @@ export function isSubmitted(p: CfPiece): boolean {
   return !!p.submittedAt || !!p.stagingLink || reachedEditorial(p);
 }
 
+/**
+ * A published piece passed editorial even when its status cell says otherwise
+ * — 41 in September carried a publish date under "On Hold", "Scrapped",
+ * "Verifying" or "Sent Back". Without this the headline showed more pieces
+ * published than verified.
+ */
 export function isVerified(p: CfPiece): boolean {
   const s = p.editorialStatus;
   const s2 = p.editorialStatus2;
   return (
     s === 'Verified' || s2 === 'Verified' ||
-    s === 'Published' || s === 'PR Published' || s === 'Scheduled'
+    s === 'Published' || s === 'PR Published' || s === 'Scheduled' ||
+    isPublished(p)
   );
 }
 

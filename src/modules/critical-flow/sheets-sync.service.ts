@@ -3,6 +3,7 @@ import { google } from 'googleapis';
 import { ParsedPiece } from './types';
 import {
   clean,
+  PARSE_VERSION,
   computeRowHash,
   isValidPiece,
   normalizeArticleType,
@@ -215,7 +216,7 @@ export class CfSheetsSyncService {
       editorComment2: text('editorComment2'),
       articleMap: text('articleMap'),
       plagReport: text('plagReport'),
-      rawHash: computeRowHash(row),
+      rawHash: computeRowHash([PARSE_VERSION, ...row]),
     };
 
     return isValidPiece(parsed) ? parsed : null;

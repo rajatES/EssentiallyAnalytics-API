@@ -1,4 +1,5 @@
 import * as crypto from 'crypto';
+import { istDate } from './time';
 
 /**
  * Parsing / canonicalisation helpers for the production aggregate sheets
@@ -19,16 +20,29 @@ export function clean(raw: any): string {
 }
 
 const SHEET_EPOCH_OFFSET = 25569; // days between 1899-12-30 and 1970-01-01
+const IST_OFFSET_MS = 330 * 60000;
+
+/**
+ * Bumped whenever parsing changes what a row turns into, so every row's hash
+ * changes once and the next sync rewrites rows it would otherwise skip as
+ * unchanged. `ist-1`: stamps read as IST rather than the server's zone.
+ */
+export const PARSE_VERSION = 'ist-1';
 
 function isReasonableDate(d: Date): boolean {
   if (isNaN(d.getTime())) return false;
-  const y = d.getFullYear();
+  const y = d.getUTCFullYear();
   return y >= 2015 && y <= 2100;
 }
 
 /**
  * Accepts an ISO-8601 string (what the workflow writes), a Sheets serial
  * number (what Sheets returns once it has coerced that string), or a Date.
+ *
+ * Every stamp in the sheets is Indian wall-clock with no zone attached, so it
+ * is read as IST explicitly. Reading it in the server's own zone made the same
+ * sheet mean different instants on a laptop in IST and on the UTC server in
+ * production — 5½ hours apart, which moved pieces across days and shifts.
  */
 export function parseDateTime(raw: any): Date | null {
   if (raw == null || raw === '') return null;
@@ -37,17 +51,18 @@ export function parseDateTime(raw: any): Date | null {
 
   if (typeof raw === 'number') {
     if (!isFinite(raw) || raw < 30000 || raw > 60000) return null;
-    const d = new Date(Math.round((raw - SHEET_EPOCH_OFFSET) * 86400000));
+    const d = new Date(Math.round((raw - SHEET_EPOCH_OFFSET) * 86400000) - IST_OFFSET_MS);
     return isReasonableDate(d) ? d : null;
   }
 
   const s = String(raw).trim();
   if (!s) return null;
 
-  // ISO — the canonical form the workflow writes. Treated as wall-clock, which
-  // is what the source sheets record.
-  if (/^\d{4}-\d{2}-\d{2}([T ]\d{2}:\d{2}(:\d{2})?)?$/.test(s)) {
-    const d = new Date(s.replace(' ', 'T'));
+  const m = /^(\d{4}-\d{2}-\d{2})(?:[T ](\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?))?(Z|[+-]\d{2}:?\d{2})?$/.exec(s);
+  if (m) {
+    const [, day, time, zone] = m;
+    const offset = zone ? zone.replace(/^([+-]\d{2})(\d{2})$/, '$1:$2') : '+05:30';
+    const d = new Date(`${day}T${time ?? '00:00:00'}${offset}`);
     return isReasonableDate(d) ? d : null;
   }
 
@@ -64,12 +79,9 @@ export function parseDateOnly(raw: any): string | null {
   return d ? toDateOnly(d) : null;
 }
 
+/** The IST calendar date of an instant, whatever zone the server runs in. */
 export function toDateOnly(d: Date | null): string | null {
-  if (!d) return null;
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
-  return `${y}-${m}-${day}`;
+  return d ? istDate(d) : null;
 }
 
 /** Non-negative finite number, or null. Blank/junk cells become null. */

@@ -5,6 +5,7 @@ import { Repository } from 'typeorm';
 import { google } from 'googleapis';
 import {
   clean,
+  PARSE_VERSION,
   computeRowHash,
   parseDateOnly,
   parseDateTime,
@@ -188,7 +189,7 @@ export class ResourcesSyncService implements OnModuleInit {
         status: t(c.status),
         sources: t(c.sources),
         flags: t(c.flags),
-        rawHash: computeRowHash(row),
+        rawHash: computeRowHash([PARSE_VERSION, ...row]),
       });
       out.push(e);
     }
@@ -219,7 +220,7 @@ export class ResourcesSyncService implements OnModuleInit {
         days: c.days < 0 ? null : parseNumber(row[c.days]),
         type: t(c.type) || 'Unspecified',
         loggedAt: c.logged < 0 ? null : parseDateTime(row[c.logged]),
-        rawHash: computeRowHash(row),
+        rawHash: computeRowHash([PARSE_VERSION, ...row]),
       });
       out.push(e);
     }
@@ -255,7 +256,7 @@ export class ResourcesSyncService implements OnModuleInit {
         editorialChartTotal: chart == null ? null : Math.round(chart),
         poc: t(c.poc),
         architecture: t(c.arch),
-        rawHash: computeRowHash(row),
+        rawHash: computeRowHash([PARSE_VERSION, ...row]),
       });
       out.push(e);
     }

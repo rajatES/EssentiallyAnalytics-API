@@ -1,3 +1,5 @@
+import { opsDayOf } from './time';
+
 /**
  * Pure statistics and bucketing shared by every production dashboard. Nothing
  * in here touches a repository, so it can be unit-tested and replayed against
@@ -79,15 +81,12 @@ export function meanOrNull(values: number[]): number | null {
   return values.length ? mean(values) : null;
 }
 
-export function toDayKey(d: Date): string {
-  const x = new Date(d);
-  const y = x.getFullYear();
-  const m = String(x.getMonth() + 1).padStart(2, '0');
-  const day = String(x.getDate()).padStart(2, '0');
-  return `${y}-${m}-${day}`;
-}
-
-/** Distinct YYYY-MM-DD days present in a set of rows, by the given stamp. */
+/**
+ * Distinct desk days present in a set of rows, by the given stamp. A timestamp
+ * counts toward its desk day — IST, with 00:00–03:59 belonging to the night
+ * shift that began the evening before — so one LNP shift that runs past
+ * midnight is one day worked, not two. Date strings are already days.
+ */
 export function activeDayCount<T>(
   rows: T[],
   pick: (p: T) => Date | string | null | undefined,
@@ -96,8 +95,7 @@ export function activeDayCount<T>(
   for (const r of rows) {
     const v = pick(r);
     if (!v) continue;
-    const d = typeof v === 'string' ? v.slice(0, 10) : toDayKey(v);
-    if (d) days.add(d);
+    days.add(typeof v === 'string' ? v.slice(0, 10) : opsDayOf(new Date(v)));
   }
   return days.size;
 }

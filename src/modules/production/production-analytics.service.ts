@@ -1,6 +1,7 @@
 import { Logger } from '@nestjs/common';
 import { ProductionPiece, RosterPerson, StageApi } from './production-piece';
 import { NameResolver, buildNameResolver } from './name-resolver';
+import { istParts, shiftDate, todayIst, weekdayNameOf } from './time';
 import {
   AGE_BANDS,
   TAT_BANDS,
@@ -120,8 +121,8 @@ export abstract class ProductionAnalyticsService<P extends ProductionPiece> {
    */
   protected hasAllotmentTime(p: P): boolean {
     if (!p.allottedAt) return false;
-    const d = new Date(p.allottedAt);
-    return d.getHours() !== 0 || d.getMinutes() !== 0 || d.getSeconds() !== 0;
+    const { hour, minute } = istParts(new Date(p.allottedAt));
+    return hour !== 0 || minute !== 0;
   }
 
   /** Hours from allotment to submission, or null when allotment has no clock time. */
@@ -173,15 +174,23 @@ export abstract class ProductionAnalyticsService<P extends ProductionPiece> {
     const rows = await this.load();
     const inSet = (v: string, list?: string[]) => !list?.length || list.includes(v);
 
+    // The filter dropdowns offer resolved names ("Caroline"), while rows carry
+    // whatever the sheet typed ("Caroline John"). Matching the raw spelling
+    // returned nothing, or a fraction, for any person the resolver renames.
+    const byPerson = !!(params.writers?.length || params.editors?.length || params.allotters?.length);
+    const resolve = byPerson ? await this.nameResolver() : null;
+    const personIn = (raw: string, division: string, list?: string[]) =>
+      !list?.length || list.includes(resolve ? resolve(raw, division) : raw);
+
     return rows.filter((p) => {
       if (params.startDate && (!p.date || p.date < params.startDate)) return false;
       if (params.endDate && (!p.date || p.date > params.endDate)) return false;
       if (!inSet(p.division, params.divisions)) return false;
-      if (!inSet(p.writer, params.writers)) return false;
-      if (!inSet(p.editor, params.editors)) return false;
+      if (!personIn(p.writer, p.division, params.writers)) return false;
+      if (!personIn(p.editor, p.division, params.editors)) return false;
       if (!inSet(p.articleType, params.articleTypes)) return false;
       if (!inSet(p.editorialStatus, params.statuses)) return false;
-      if (!inSet(p.allottedBy, params.allotters)) return false;
+      if (!personIn(p.allottedBy, p.division, params.allotters)) return false;
       return true;
     });
   }
@@ -189,17 +198,14 @@ export abstract class ProductionAnalyticsService<P extends ProductionPiece> {
   /** Same-length window immediately before the requested one, for deltas. */
   protected previousPeriod(params: ProductionFilterParams): ProductionFilterParams {
     if (!params.startDate || !params.endDate) return { ...params };
-    const start = new Date(params.startDate);
-    const end = new Date(params.endDate);
-    const days = Math.max(1, Math.round((end.getTime() - start.getTime()) / 86400000) + 1);
-    const prevEnd = new Date(start);
-    prevEnd.setDate(prevEnd.getDate() - 1);
-    const prevStart = new Date(prevEnd);
-    prevStart.setDate(prevStart.getDate() - days + 1);
+    const days = Math.max(
+      1,
+      Math.round((Date.parse(params.endDate) - Date.parse(params.startDate)) / 86400000) + 1,
+    );
     return {
       ...params,
-      startDate: prevStart.toISOString().slice(0, 10),
-      endDate: prevEnd.toISOString().slice(0, 10),
+      startDate: shiftDate(params.startDate, -days),
+      endDate: shiftDate(params.startDate, -1),
     };
   }
 
@@ -339,9 +345,9 @@ export abstract class ProductionAnalyticsService<P extends ProductionPiece> {
     const key = (d: string): string => {
       if (granularity === 'month') return d.slice(0, 7);
       if (granularity === 'week') {
-        const dt = new Date(d);
-        dt.setDate(dt.getDate() - dt.getDay());
-        return dt.toISOString().slice(0, 10);
+        // Weeks start on Sunday, computed on the date string itself so the
+        // server's zone cannot move a day into the neighbouring week.
+        return shiftDate(d, -new Date(`${d}T12:00:00Z`).getUTCDay());
       }
       return d;
     };
@@ -804,7 +810,7 @@ export abstract class ProductionAnalyticsService<P extends ProductionPiece> {
     const [roster, rows] = await Promise.all([this.loadRoster(), this.filter(params)]);
     const resolve = await this.nameResolver();
     const now = new Date();
-    const todayName = WEEKDAYS[now.getDay()];
+    const todayName = weekdayNameOf(todayIst(now));
 
     // Activity index, keyed on the resolved identity so roster and data agree.
     const activity = new Map<string, { active: number; last: string | null; count: number; division: string }>();
@@ -936,7 +942,7 @@ export abstract class ProductionAnalyticsService<P extends ProductionPiece> {
     const wd = new Map<number, P[]>();
     for (const p of rows) {
       if (!p.date) continue;
-      const d = new Date(p.date).getDay();
+      const d = new Date(`${p.date}T12:00:00Z`).getUTCDay();
       if (!wd.has(d)) wd.set(d, []);
       wd.get(d)!.push(p);
     }
@@ -956,8 +962,8 @@ export abstract class ProductionAnalyticsService<P extends ProductionPiece> {
     const heat = new Map<string, number>();
     for (const p of rows) {
       if (!p.submittedAt) continue;
-      const d = new Date(p.submittedAt);
-      const k = `${d.getDay()}-${d.getHours()}`;
+      const { weekday, hour } = istParts(new Date(p.submittedAt));
+      const k = `${weekday}-${hour}`;
       heat.set(k, (heat.get(k) ?? 0) + 1);
     }
     const submissionHeatmap = [...heat.entries()].map(([k, count]) => {
