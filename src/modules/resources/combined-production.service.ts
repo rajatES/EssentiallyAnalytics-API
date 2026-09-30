@@ -5,6 +5,7 @@ import { CfPiece } from '../critical-flow/entities/cf-piece.entity';
 import * as cfStages from '../critical-flow/stages';
 import { YpPiece } from '../yahoo-production/entities/yp-piece.entity';
 import * as ypStages from '../yahoo-production/stages';
+import { activeDayCount, perDay } from '../production/analytics';
 import { buildNameResolver } from '../production/name-resolver';
 import { normalizeTitleKey, toDateOnly } from '../production/normalization';
 import { opsDayOf, shiftDate } from '../production/time';
@@ -22,8 +23,25 @@ export interface CombinedProductionResult {
   endDate: string | null;
   totals: { submitted: Split; published: Split };
   days: { date: string; published: Split }[];
-  writers: { writer: string; division: string; submitted: Split; sentBack: number }[];
-  editors: { editor: string; division: string; published: Split }[];
+  writers: {
+    writer: string;
+    division: string;
+    submitted: Split;
+    sentBack: number;
+    /** Distinct days in the range they submitted on; null for the no-writer row. */
+    daysWorked: number | null;
+    /** Submitted per day worked. */
+    perDay: number | null;
+  }[];
+  editors: {
+    editor: string;
+    division: string;
+    published: Split;
+    /** Distinct days in the range they cleared a counted piece on; null for the no-editor row. */
+    daysWorked: number | null;
+    /** Published per day worked. */
+    perDay: number | null;
+  }[];
   divisions: { division: string; submitted: Split; published: Split }[];
   notes: {
     /** CF pieces also tracked on the Yahoo sheet, all dates — each counted once, as Yahoo. */
@@ -40,6 +58,8 @@ interface Piece {
   editor: string;
   submittedDay: string | null;
   publishedDay: string | null;
+  /** When the credited editor's pass ended — the day they worked on it. */
+  editedAt: Date | null;
   sentBack: boolean;
   /** Submitted or published, yet nothing places it on a day. */
   undated: boolean;
@@ -118,6 +138,7 @@ export class CombinedProductionService {
       const publishedDay = published
         ? p.publishedDate ?? toDateOnly(p.liveAt ?? p.editorAt2 ?? p.editorAt ?? null)
         : null;
+      const secondPass = !!known(p.editor2);
       pieces.push({
         yahoo: false,
         division: p.division,
@@ -126,6 +147,7 @@ export class CombinedProductionService {
         editor: known(p.editor2) || known(p.editor),
         submittedDay,
         publishedDay,
+        editedAt: (secondPass ? p.editorAt2 ?? p.editorAt : p.editorAt) ?? null,
         sentBack: cfStages.isSentBack(p),
         undated: (cfStages.isSubmitted(p) && !submittedDay) || (published && !publishedDay),
       });
@@ -143,6 +165,7 @@ export class CombinedProductionService {
         editor: known(y.editor),
         submittedDay,
         publishedDay,
+        editedAt: y.editorAt ?? null,
         sentBack: false,
         undated: (ypStages.isSubmitted(y) && !submittedDay) || (published && !publishedDay),
       });
@@ -171,8 +194,9 @@ export class CombinedProductionService {
 
     const totals = { submitted: split(), published: split() };
     const byDay = new Map<string, Split>();
-    const byWriter = new Map<string, { divisions: Map<string, number>; submitted: Split; sentBack: number }>();
-    const byEditor = new Map<string, { divisions: Map<string, number>; published: Split }>();
+    type Tally = { divisions: Map<string, number>; pieces: Piece[] };
+    const byWriter = new Map<string, Tally & { submitted: Split; sentBack: number }>();
+    const byEditor = new Map<string, Tally & { published: Split }>();
     const byDivision = new Map<string, { submitted: Split; published: Split }>();
     const divisionRow = (d: string) => {
       if (!byDivision.has(d)) byDivision.set(d, { submitted: split(), published: split() });
@@ -189,8 +213,11 @@ export class CombinedProductionService {
         add(divisionRow(p.division).submitted, p.yahoo);
         {
           const name = p.writer ? resolve(p.writer, p.division) : NO_WRITER;
-          if (!byWriter.has(name)) byWriter.set(name, { divisions: new Map(), submitted: split(), sentBack: 0 });
+          if (!byWriter.has(name)) {
+            byWriter.set(name, { divisions: new Map(), pieces: [], submitted: split(), sentBack: 0 });
+          }
           const w = byWriter.get(name)!;
+          w.pieces.push(p);
           add(w.submitted, p.yahoo);
           if (p.sentBack) w.sentBack++;
           w.divisions.set(p.division, (w.divisions.get(p.division) ?? 0) + 1);
@@ -204,8 +231,9 @@ export class CombinedProductionService {
         add(byDay.get(p.publishedDay)!, p.yahoo);
         {
           const name = p.editor ? resolve(p.editor, p.division) : NO_EDITOR;
-          if (!byEditor.has(name)) byEditor.set(name, { divisions: new Map(), published: split() });
+          if (!byEditor.has(name)) byEditor.set(name, { divisions: new Map(), pieces: [], published: split() });
           const e = byEditor.get(name)!;
+          e.pieces.push(p);
           add(e.published, p.yahoo);
           e.divisions.set(p.division, (e.divisions.get(p.division) ?? 0) + 1);
         }
@@ -227,6 +255,14 @@ export class CombinedProductionService {
     const mainDivision = (m: Map<string, number>) =>
       [...m.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? '';
 
+    // Days worked, inside the range only, so an average is over the days a
+    // person actually worked rather than the length of the filter. Writers work
+    // on the day they submit; editors on the day their pass ended, falling back
+    // to the sheet's publication date when that stamp is missing or outside.
+    const range = { startDate: params.startDate, endDate: params.endDate };
+    const worked = (days: number, total: number) => ({ daysWorked: days, perDay: perDay(total, days) });
+    const nobody = { daysWorked: null, perDay: null };
+
     return {
       startDate: params.startDate ?? null,
       endDate: params.endDate ?? null,
@@ -238,6 +274,9 @@ export class CombinedProductionService {
           division: writer === NO_WRITER ? '' : mainDivision(w.divisions),
           submitted: w.submitted,
           sentBack: w.sentBack,
+          ...(writer === NO_WRITER
+            ? nobody
+            : worked(activeDayCount(w.pieces, (p) => p.submittedDay, range), w.submitted.total)),
         }))
         .sort((a, b) => b.submitted.total - a.submitted.total || a.writer.localeCompare(b.writer)),
       editors: [...byEditor.entries()]
@@ -245,6 +284,12 @@ export class CombinedProductionService {
           editor,
           division: editor === NO_EDITOR ? '' : mainDivision(e.divisions),
           published: e.published,
+          ...(editor === NO_EDITOR
+            ? nobody
+            : worked(
+                activeDayCount(e.pieces, (p) => p.editedAt, { ...range, fallback: (p) => p.publishedDay }),
+                e.published.total,
+              )),
         }))
         .sort((a, b) => b.published.total - a.published.total || a.editor.localeCompare(b.editor)),
       divisions: [...byDivision.entries()]

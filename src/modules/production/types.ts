@@ -54,7 +54,10 @@ export interface KpiOverview {
   pendingCount: number;
   activeWriters: number;
   activeEditors: number;
+  /** Submissions per writer per day worked: writers' submissions over their summed days worked. */
   perWriterPerDay: number;
+  /** Days worked, summed over writers — the denominator of perWriterPerDay. */
+  writerDaysWorked: number;
   /** False when no date range was supplied, so deltas carry no comparison. */
   deltasAvailable: boolean;
   deltas: Record<string, KpiDelta>;

@@ -211,7 +211,11 @@ export class YahooProductionService
     return [...groups.values()]
       .map(({ quota, rows: rs, divisions }) => {
         const publishedRows = rs.filter((p) => this.isPublished(p));
-        const days = activeDayCount(publishedRows, (p) => p.publishedDate ?? p.date);
+        const days = activeDayCount(publishedRows, (p) => p.publishedDate, {
+          fallback: (p) => p.date,
+          startDate: params.startDate,
+          endDate: params.endDate,
+        });
         const rate = perDay(publishedRows.length, days);
         const target = quota?.quota ?? null;
         return {

@@ -271,7 +271,7 @@ export abstract class ProductionAnalyticsService<P extends ProductionPiece> {
   async getOverview(params: ProductionFilterParams): Promise<KpiOverview> {
     const resolve = await this.nameResolver();
     const rows = await this.filter(params);
-    const cur = this.computeKpis(rows, resolve);
+    const cur = this.computeKpis(rows, resolve, params);
 
     const KEYS = [
       'allotted', 'submitted', 'verified', 'published', 'publishRate',
@@ -288,7 +288,8 @@ export abstract class ProductionAnalyticsService<P extends ProductionPiece> {
       return { ...cur, deltasAvailable: false, deltas };
     }
 
-    const prev = this.computeKpis(await this.filter(this.previousPeriod(params)), resolve);
+    const prevParams = this.previousPeriod(params);
+    const prev = this.computeKpis(await this.filter(prevParams), resolve, prevParams);
     for (const key of KEYS) {
       deltas[key] = this.delta(cur[key] as number, prev[key] as number);
     }
@@ -298,6 +299,7 @@ export abstract class ProductionAnalyticsService<P extends ProductionPiece> {
   protected computeKpis(
     rows: P[],
     resolve: NameResolver,
+    range: Pick<ProductionFilterParams, 'startDate' | 'endDate'> = {},
   ): Omit<KpiOverview, 'deltas' | 'deltasAvailable'> {
     const now = new Date();
     const allotted = rows.length;
@@ -317,7 +319,27 @@ export abstract class ProductionAnalyticsService<P extends ProductionPiece> {
     const editors = new Set(
       rows.filter((p) => p.editor !== 'Unknown').map((p) => resolve(p.editor, p.division)),
     );
-    const days = new Set(rows.map((p) => p.date).filter(Boolean)).size || 1;
+
+    // Per writer per day *worked*: each writer's submissions over the days they
+    // actually submitted, the same count the Writers table shows. Dividing by
+    // the days in the range would charge a writer who worked 5 of 7 days for 7.
+    const byWriter = new Map<string, P[]>();
+    for (const p of rows) {
+      if (p.writer === 'Unknown' || !this.isSubmitted(p)) continue;
+      const name = resolve(p.writer, p.division);
+      if (!byWriter.has(name)) byWriter.set(name, []);
+      byWriter.get(name)!.push(p);
+    }
+    let writerDaysWorked = 0;
+    let writerSubmitted = 0;
+    for (const rs of byWriter.values()) {
+      writerSubmitted += rs.length;
+      writerDaysWorked += activeDayCount(rs, (p) => p.submittedAt, {
+        fallback: (p) => p.date,
+        startDate: range.startDate,
+        endDate: range.endDate,
+      });
+    }
 
     return {
       allotted,
@@ -333,7 +355,8 @@ export abstract class ProductionAnalyticsService<P extends ProductionPiece> {
       pendingCount,
       activeWriters: writers.size,
       activeEditors: editors.size,
-      perWriterPerDay: round(submitted / Math.max(writers.size, 1) / days, 2),
+      perWriterPerDay: perDay(writerSubmitted, writerDaysWorked),
+      writerDaysWorked,
     };
   }
 
@@ -496,7 +519,8 @@ export abstract class ProductionAnalyticsService<P extends ProductionPiece> {
         // date where a division never fills that column in.
         const writerDays = activeDayCount(
           rs.filter((p) => this.isSubmitted(p)),
-          (p) => p.submittedAt ?? p.date,
+          (p) => p.submittedAt,
+          { fallback: (p) => p.date, startDate: params.startDate, endDate: params.endDate },
         );
         return {
           writer,
@@ -539,7 +563,11 @@ export abstract class ProductionAnalyticsService<P extends ProductionPiece> {
           .map((p) => hoursBetween(p.submittedAt, p.editorAt))
           .filter((n): n is number => n != null);
         const sentBack = rs.filter((p) => this.isSentBack(p)).length;
-        const editorDays = activeDayCount(rs, (p) => p.editorAt ?? p.date);
+        const editorDays = activeDayCount(rs, (p) => p.editorAt, {
+          fallback: (p) => p.date,
+          startDate: params.startDate,
+          endDate: params.endDate,
+        });
         return {
           editor,
           division: [...division.entries()].sort((a, b) => b[1] - a[1])[0][0],

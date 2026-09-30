@@ -81,21 +81,44 @@ export function meanOrNull(values: number[]): number | null {
   return values.length ? mean(values) : null;
 }
 
+export interface DayCountOptions<T> {
+  /** The row's own day, used when it has no stamp or the stamp's day is out of range. */
+  fallback?: (p: T) => string | null | undefined;
+  startDate?: string;
+  endDate?: string;
+}
+
 /**
- * Distinct desk days present in a set of rows, by the given stamp. A timestamp
- * counts toward its desk day — IST, with 00:00–03:59 belonging to the night
- * shift that began the evening before — so one LNP shift that runs past
- * midnight is one day worked, not two. Date strings are already days.
+ * Days worked: the distinct desk days present in a set of rows, by the given
+ * stamp. A timestamp counts toward its desk day — IST, with 00:00–03:59
+ * belonging to the night shift that began the evening before — so one LNP
+ * shift that runs past midnight is one day worked, not two. Date strings are
+ * already days.
+ *
+ * With a range, only days inside it count. A stamp whose desk day falls
+ * outside (a 01:30 submission on the range's first morning belongs to the
+ * night before) moves to the row's own day, which is what put the row in range.
+ * So someone who worked 5 days of a 7-day filter reads 5, never 6 or 8, and
+ * every piece counted sits on a counted day.
  */
 export function activeDayCount<T>(
   rows: T[],
   pick: (p: T) => Date | string | null | undefined,
+  opts: DayCountOptions<T> = {},
 ): number {
+  const inRange = (d: string) =>
+    (!opts.startDate || d >= opts.startDate) && (!opts.endDate || d <= opts.endDate);
+  const dayOf = (v: Date | string | null | undefined): string | null =>
+    !v ? null : typeof v === 'string' ? v.slice(0, 10) : opsDayOf(new Date(v));
+
   const days = new Set<string>();
   for (const r of rows) {
-    const v = pick(r);
-    if (!v) continue;
-    days.add(typeof v === 'string' ? v.slice(0, 10) : opsDayOf(new Date(v)));
+    let day = dayOf(pick(r));
+    if (!day || !inRange(day)) {
+      const own = dayOf(opts.fallback?.(r));
+      day = own && inRange(own) ? own : null;
+    }
+    if (day) days.add(day);
   }
   return days.size;
 }
