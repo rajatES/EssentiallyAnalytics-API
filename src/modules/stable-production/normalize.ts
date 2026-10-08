@@ -197,11 +197,19 @@ export function isVerifiedStage(s: StableStage): boolean {
 
 // ── Sport ──
 
+// College rules run first: "NCAAB/WNBA" (March Madness) is a college tab that
+// also names a pro league, and NCAA football must not read as basketball.
 const SPORT_RULES: [RegExp, string][] = [
+  [
+    /\bcfb\b|\bncaaf\b|college[\s-]*football|ncaa[\s-]*(college[\s-]*)?football/i,
+    'College Football',
+  ],
+  [
+    /\bncaab?\b|ncaa[\s-]*basketball|march madness|final four/i,
+    'NCAA Basketball',
+  ],
   [/\bwnba\b/i, 'WNBA'],
   [/\bnba\b/i, 'NBA'],
-  [/\bncaa|march madness/i, 'NCAA Basketball'],
-  [/\bcfb\b|college football|ncaa-college-football/i, 'College Football'],
   [/\bnfl\b/i, 'NFL'],
   [/\bmlb\b/i, 'MLB'],
   [/nascar/i, 'NASCAR'],

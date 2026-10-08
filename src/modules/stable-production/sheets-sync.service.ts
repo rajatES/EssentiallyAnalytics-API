@@ -18,7 +18,7 @@ import {
 import { ParsedSpPiece, ParsedSpRosterPerson } from './types';
 
 /** Bumped when parsing changes, so the next sync rewrites every row once. */
-const SP_PARSE_VERSION = 'sp-1';
+const SP_PARSE_VERSION = 'sp-2';
 
 type Key =
   | 'player'
