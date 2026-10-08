@@ -57,6 +57,8 @@ export class AnalyticsController {
         'platform',
         'syncState',
         'lastSyncError',
+        'connectedViaId',
+        'connectedViaName',
       ],
     });
     return res.status(200).json(profiles);

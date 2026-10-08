@@ -9,6 +9,12 @@ export const exchangeForLongLivedToken = async (shortLivedToken: string) => {
   return response.data.access_token;
 };
 
+export const fetchTokenOwner = async (accessToken: string) => {
+  const url = `${BASE_URL}/me?fields=id,name&access_token=${accessToken}`;
+  const response = await axios.get(url);
+  return { id: String(response.data.id), name: response.data.name as string };
+};
+
 export const fetchPermanentPageTokens = async (
   userId: string | 'me',
   accessToken: string,

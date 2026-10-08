@@ -30,6 +30,18 @@ export class SocialProfile {
   @Column({ type: 'varchar', nullable: true })
   username: string | null;
 
+  /**
+   * The Facebook user whose login minted this profile's token. Lets pages from
+   * several Facebook accounts coexist: reconnecting or disconnecting one account
+   * only touches the pages it granted. Null for rows connected before this was
+   * tracked; they pick it up the next time their account reconnects.
+   */
+  @Column({ type: 'varchar', nullable: true })
+  connectedViaId: string | null;
+
+  @Column({ type: 'varchar', nullable: true })
+  connectedViaName: string | null;
+
   @Column({ default: 'COMPLETED' })
   syncState: string;
 

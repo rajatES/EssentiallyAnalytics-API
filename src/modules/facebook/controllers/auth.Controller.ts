@@ -1,7 +1,7 @@
 import { Controller, Post, Body, Res, Get } from '@nestjs/common';
 import type { Response } from 'express';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, In } from 'typeorm';
+import { Repository, In, IsNull, Not } from 'typeorm';
 import { InjectQueue } from '@nestjs/bull';
 import type { Queue } from 'bull';
 import { SocialProfile } from '../entities/SocialProfile.entity';
@@ -15,9 +15,13 @@ import {
   exchangeForLongLivedToken,
   fetchLinkedInstagramAccounts,
   fetchPermanentPageTokens,
+  fetchTokenOwner,
 } from '../services/meta.service';
 import { MinRole } from '../../../common/decorators/min-role.decorator';
 import { UserRole } from '../../auth/entities/user.entity';
+
+// Disconnect key for profiles connected before connectedViaId was recorded.
+const LEGACY_GRANTOR = 'legacy';
 
 @Controller('api/auth/meta')
 export class AuthController {
@@ -48,11 +52,12 @@ export class AuthController {
     try {
       const { shortLivedToken } = body;
       const longLivedToken = await exchangeForLongLivedToken(shortLivedToken);
+      const grantor = await fetchTokenOwner(longLivedToken);
       const pages = await fetchPermanentPageTokens('me', longLivedToken);
 
       const igAccounts = await fetchLinkedInstagramAccounts(pages);
 
-      return res.status(200).json({ pages, igAccounts });
+      return res.status(200).json({ pages, igAccounts, grantor });
     } catch (error: any) {
       console.error('Fetch Pages Error:', error);
       return res.status(500).json({ error: 'Failed to fetch Meta accounts' });
@@ -62,11 +67,18 @@ export class AuthController {
   @MinRole(UserRole.MANAGEMENT)
   @Post('confirm-pages')
   async confirmPages(
-    @Body() body: { selectedPages?: any[]; selectedIgAccounts?: any[] },
+    @Body()
+    body: {
+      selectedPages?: any[];
+      selectedIgAccounts?: any[];
+      grantor?: { id: string; name: string } | null;
+    },
     @Res() res: Response,
   ) {
     try {
-      const { selectedPages = [], selectedIgAccounts = [] } = body;
+      const { selectedPages = [], selectedIgAccounts = [], grantor } = body;
+      const connectedViaId = grantor?.id ? String(grantor.id) : null;
+      const connectedViaName = grantor?.name ?? null;
 
       const profilePayloads: any[] = [];
 
@@ -77,6 +89,8 @@ export class AuthController {
           platform: 'facebook',
           accessToken: page.access_token,
           isActive: true,
+          connectedViaId,
+          connectedViaName,
         });
       });
 
@@ -91,17 +105,24 @@ export class AuthController {
           platform: 'instagram',
           accessToken: ig.access_token,
           isActive: true,
+          connectedViaId,
+          connectedViaName,
         });
       });
 
-      await this.profileRepo.update(
-        { platform: 'facebook' },
-        { isActive: false },
-      );
-      await this.profileRepo.update(
-        { platform: 'instagram' },
-        { isActive: false },
-      );
+      // Re-running connect with the same Facebook account still narrows what it
+      // tracks — anything it granted before but left unticked stops syncing.
+      // Pages granted by other accounts are not this login's to drop.
+      if (connectedViaId && profilePayloads.length > 0) {
+        await this.profileRepo.update(
+          {
+            connectedViaId,
+            isActive: true,
+            profileId: Not(In(profilePayloads.map((p) => p.profileId))),
+          },
+          { isActive: false },
+        );
+      }
 
       if (profilePayloads.length > 0) {
         await this.profileRepo.upsert(profilePayloads, ['profileId']);
@@ -156,19 +177,45 @@ export class AuthController {
   @Post('disconnect')
   async disconnectMeta(
     @Body()
-    body: { deleteData: boolean; platform?: 'facebook' | 'instagram' | 'all' },
+    body: {
+      deleteData: boolean;
+      platform?: 'facebook' | 'instagram' | 'all';
+      // Limits the disconnect to the pages one Facebook account granted;
+      // LEGACY_GRANTOR targets rows connected before grantors were recorded.
+      connectedViaId?: string;
+    },
     @Res() res: Response,
   ) {
     try {
-      const { deleteData, platform = 'all' } = body;
+      const { deleteData, platform = 'all', connectedViaId } = body;
 
       const platformQuery =
         platform === 'all' ? In(['facebook', 'instagram']) : platform;
 
       const profiles = await this.profileRepo.find({
-        where: { platform: platformQuery },
+        where: {
+          platform: platformQuery,
+          ...(connectedViaId
+            ? {
+                connectedViaId:
+                  connectedViaId === LEGACY_GRANTOR ? IsNull() : connectedViaId,
+              }
+            : {}),
+        },
       });
       const profileIds = profiles.map((p) => p.profileId);
+
+      if (connectedViaId && profileIds.length === 0) {
+        return res
+          .status(404)
+          .json({ error: 'No pages are connected through that account' });
+      }
+
+      // A per-account disconnect must not touch other accounts' rows, so it
+      // scopes by profile; a full disconnect keeps sweeping by platform.
+      const scope: any = connectedViaId
+        ? { profileId: In(profileIds) }
+        : { platform: platformQuery };
 
       if (profileIds.length > 0) {
         const jobs = await this.syncQueue.getJobs([
@@ -205,22 +252,26 @@ export class AuthController {
           await this.postLinkCommentRepo.delete({ profileId: In(profileIds) });
         }
 
-        await this.demographicRepo.delete({ platform: platformQuery as any });
-        await this.snapshotRepo.delete({ platform: platformQuery as any });
-        await this.postRepo.delete({ platform: platformQuery as any });
-        await this.profileRepo.delete({ platform: platformQuery as any });
+        await this.demographicRepo.delete(scope);
+        await this.snapshotRepo.delete(scope);
+        await this.postRepo.delete(scope);
+        await this.profileRepo.delete(scope);
       } else {
-        await this.profileRepo.update(
-          { platform: platformQuery as any },
-          { isActive: false, syncState: 'DISCONNECTED' },
-        );
+        await this.profileRepo.update(scope, {
+          isActive: false,
+          syncState: 'DISCONNECTED',
+        });
       }
 
+      const target = connectedViaId
+        ? `${profileIds.length} profile(s)`
+        : platform;
       return res.status(200).json({
         success: true,
+        removed: profileIds.length,
         message: deleteData
-          ? `Successfully disconnected and deleted data for ${platform}.`
-          : `Successfully disconnected ${platform} accounts.`,
+          ? `Successfully disconnected and deleted data for ${target}.`
+          : `Successfully disconnected ${target} accounts.`,
       });
     } catch (error: any) {
       console.error('Disconnect Meta Error:', error);
