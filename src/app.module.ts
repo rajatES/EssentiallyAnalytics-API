@@ -19,6 +19,7 @@ import { RiskModule } from './modules/risk/risk.module';
 import { CriticalFlowModule } from './modules/critical-flow/critical-flow.module';
 import { YahooProductionModule } from './modules/yahoo-production/yahoo-production.module';
 import { StableProductionModule } from './modules/stable-production/stable-production.module';
+import { WeeklyReportModule } from './modules/cf-weekly-report/weekly-report.module';
 import { ResourcesModule } from './modules/resources/resources.module';
 import { MailModule } from './common/mail/mail.module';
 import { McpSocialModule } from './modules/mcp-social/mcp-social.module';
@@ -71,6 +72,7 @@ import { PageDirectoryModule } from './modules/page-directory/page-directory.mod
     CriticalFlowModule,
     YahooProductionModule,
     StableProductionModule,
+    WeeklyReportModule,
     ResourcesModule,
     McpSocialModule,
     PageDirectoryModule,

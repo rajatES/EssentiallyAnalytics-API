@@ -34,6 +34,6 @@ import { YpDivisionQuota } from '../yahoo-production/entities/yp-division-quota.
   ],
   controllers: [ResourcesController, CombinedProductionController],
   providers: [ResourcesService, ResourcesSyncService, ResourceDirectoryService, CombinedProductionService],
-  exports: [ResourceDirectoryService],
+  exports: [ResourceDirectoryService, CombinedProductionService],
 })
 export class ResourcesModule {}
