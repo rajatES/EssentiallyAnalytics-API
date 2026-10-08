@@ -9,9 +9,9 @@ export interface ReportWeek {
 
 /** One person, or one group, in one week. */
 export interface WeekTally {
-  /** Pieces submitted (writers) or published (editors). */
+  /** Pieces submitted (writers), published (editors) or written (editors' own). */
   output: number;
-  /** Person-days with any output. */
+  /** Person-days with any output; a full week per person for editors' own writing. */
   daysWorked: number;
   /** People with any output; 1 or 0 for a single person. */
   active: number;
@@ -26,21 +26,37 @@ export interface ReportMember {
   weeks: WeekTally[];
 }
 
+export type GroupKey =
+  | 'stables'
+  | 'part-time'
+  | 'msn'
+  | 'tenured'
+  | 'editors'
+  | 'producers'
+  | 'pod'
+  | 'non-pod'
+  | 'associates'
+  | 'stables-editors'
+  | 'unlisted';
+
 export interface ReportGroup {
+  key: GroupKey;
   name: string;
-  /** What a member's output is: what they submitted, or what they published. */
-  measure: 'submitted' | 'published' | 'by role';
-  /** The desk's "ideal efficiency": output per person per day; null for writers on no schedule. */
+  /**
+   * What a member's output is: what they submitted, what they published, by
+   * role for producers, or what editors wrote themselves over the whole week.
+   */
+  measure: 'submitted' | 'published' | 'by role' | 'written';
+  /** The desk's "ideal efficiency": output per person per day; null where the sheet sets none. */
   target: number | null;
   /** Listed in the schedule today, active or not. */
   rostered: number;
+  /** Rostered members on leave for the whole of the latest week. */
+  onLeave: number;
+  /** Primary divisions of the rostered members, most members first. */
+  divisions: string[];
   weeks: WeekTally[];
   members: ReportMember[];
-}
-
-export interface ReportSection {
-  title: string;
-  groups: ReportGroup[];
 }
 
 export interface WeeklyReport {
@@ -48,5 +64,6 @@ export interface WeeklyReport {
   weeks: ReportWeek[];
   /** End of the latest complete week, the furthest the report can move forward to. */
   latestEnd: string;
-  sections: ReportSection[];
+  /** In the order of the desk's Week on Week sheet. */
+  groups: ReportGroup[];
 }
