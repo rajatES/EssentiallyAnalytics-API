@@ -1,8 +1,10 @@
 import { Controller, Post, Query, Res } from '@nestjs/common';
 import type { Response } from 'express';
 import { CommentLinksService } from './comment-links.service';
+import { Section } from '../../common/decorators/section.decorator';
 
 @Controller('comment-links')
+@Section('sm')
 export class CommentLinksController {
   constructor(private readonly commentLinksService: CommentLinksService) {}
 

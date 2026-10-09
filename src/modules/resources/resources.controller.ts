@@ -3,8 +3,10 @@ import { ResourcesService } from './resources.service';
 import { ResourcesSyncService } from './resources-sync.service';
 import { MinRole } from '../../common/decorators/min-role.decorator';
 import { UserRole } from '../auth/entities/user.entity';
+import { Section } from '../../common/decorators/section.decorator';
 
 @Controller('v1/resources')
+@Section('cf')
 export class ResourcesController {
   constructor(
     private readonly resources: ResourcesService,

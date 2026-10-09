@@ -12,7 +12,19 @@ export enum UserRole {
    */
   SUPERADMIN = 'superadmin',
   ADMIN = 'admin',
+  SM_MANAGER = 'sm_manager',
+  SM_USER = 'sm_user',
+  CF_MANAGER = 'cf_manager',
+  CF_USER = 'cf_user',
+  /**
+   * A manager with no section, left over from before sections existed. Not
+   * assignable any more; as a `@MinRole` it still means "any manager".
+   */
   MANAGEMENT = 'management',
+  /**
+   * No section yet — where every sign-up starts, and it opens no pages until
+   * the superadmin picks one. As a `@MinRole` it means "anyone signed in".
+   */
   USER = 'user',
 }
 

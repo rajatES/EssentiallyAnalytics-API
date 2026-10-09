@@ -3,8 +3,10 @@ import { YahooProductionService } from './yahoo-production.service';
 import { YpFilterParams } from './types';
 import { MinRole } from '../../common/decorators/min-role.decorator';
 import { UserRole } from '../auth/entities/user.entity';
+import { Section } from '../../common/decorators/section.decorator';
 
 @Controller('v1/yahoo-production')
+@Section('cf')
 export class YahooProductionController {
   constructor(private readonly service: YahooProductionService) {}
 

@@ -1,5 +1,6 @@
-import { IsEmail, IsString, MinLength, IsOptional, IsEnum } from 'class-validator';
+import { IsEmail, IsString, MinLength, IsOptional, IsIn } from 'class-validator';
 import { UserRole } from '../../modules/auth/entities/user.entity';
+import { ASSIGNABLE_ROLES } from '../../modules/auth/roles';
 
 export class SetupDto {
   @IsEmail({}, { message: 'Please provide a valid email address' })
@@ -10,6 +11,6 @@ export class SetupDto {
   password: string;
 
   @IsOptional()
-  @IsEnum(UserRole, { message: 'Role must be one of: admin, management, user' })
+  @IsIn(ASSIGNABLE_ROLES, { message: `Role must be one of: ${ASSIGNABLE_ROLES.join(', ')}` })
   role?: UserRole;
 }

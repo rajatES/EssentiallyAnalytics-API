@@ -1,8 +1,8 @@
 # Auth: sign-up by emailed code, roles, and the super user
 
 Anyone with an `@essentiallysports.com` address can create an account. Everyone
-starts as a **User**; one **super user**, defined in the API's environment, moves
-people between User, Manager and Admin.
+starts with **no access**; one **super user**, defined in the API's environment,
+makes each person a User or Manager of Social Media or Critical Flow, or an Admin.
 
 > An earlier self-service sign-up (password first, then verify; sign-ups became
 > Managers) was built, reverted and parked in this file. It is replaced by the flow
@@ -35,18 +35,39 @@ people between User, Manager and Admin.
 
 ## Roles
 
-| Role | Stored as | Gets |
-| --- | --- | --- |
-| Super user | `superadmin` | Everything, plus the **Access** page (`/users`) |
-| Admin | `admin` | Sync buttons (CF, Yahoo, MSN, Meta, BigQuery), MSN report targets, delete-all mappings |
-| Manager | `management` | Resource quotas, Meta connect/disconnect, email-report recipients |
-| User | `user` | Every dashboard, read-only for the above |
+Three levels — admin, manager, user — and managers and users each belong to one
+section of the app: Social Media (SM) or Critical Flow (CF).
 
-Roles are now enforced **on the API**, not just hidden in the UI: `@MinRole(...)` on
-a route is checked by the global `ApiKeyGuard` after authentication, and a higher
-role passes every lower check. The routes gated are exactly the ones the UI already
-hid, so nobody loses anything they could use before. Machine-called routes (MSN
-ingest, backfills, imports) are deliberately left ungated.
+| Role | Stored as | Pages | On top of reading them |
+| --- | --- | --- | --- |
+| Super user | `superadmin` | Everything, plus **Access** (`/users`) | Hands out roles |
+| Admin | `admin` | Everything | Sync buttons (CF, Yahoo, MSN, Meta, BigQuery), MSN report targets, delete-all mappings |
+| SM Manager | `sm_manager` | Dashboard, Web Traffic, Reports, Revenue | Meta connect/disconnect, email-report recipients |
+| SM User | `sm_user` | Dashboard, Web Traffic, Reports | — |
+| CF Manager | `cf_manager` | Production, Yahoo, Stable, Weekly Report, Resources | Resource quotas |
+| CF User | `cf_user` | Same as CF Manager | — |
+| No access yet | `user` | Settings only | — |
+
+Every sign-up starts as `user`, which opens nothing until the super user picks a
+role. `management` is the old section-less manager: still understood (it also opens
+nothing), no longer assignable.
+
+Two checks run in the global `ApiKeyGuard` after authentication, so none of this is
+only hidden in the UI:
+
+- `@MinRole(...)` — the level. Higher passes lower; as a minimum, `management`
+  means either section's manager and `user` anyone signed in.
+- `@Section('sm' | 'cf')` — on the controller. Admins are in both sections.
+  Revenue is `@Section('sm')` plus `@MinRole(MANAGEMENT)`.
+
+`v1/risk` and `v1/social` carry no section: they are called server-to-server with an
+account's key, not from a page. Other machine-called routes (backfills, imports) sit
+on Social Media controllers, so the account whose key calls them must be an admin
+or an SM role. The MSN ingest is `@Public` with its own key and is unaffected.
+
+The UI's copy of the same rules is `lib/access.ts`: one route table drives the
+sidebar, the `AccessGate` that redirects a mistyped URL to the person's own section,
+and where sign-in lands.
 
 A role change applies on the person's next request — the guard reads the role from
 the database each time, and `/api/auth/me` refreshes the UI's `user_role` cookie.
@@ -84,11 +105,11 @@ except that it refuses to create a super user.
 ## Files
 
 API: `modules/auth/{auth.service,auth.controller,users.controller,otp.service,otp-email,roles}.ts`,
-`modules/auth/entities/{user,auth-otp}.entity.ts`, `common/decorators/min-role.decorator.ts`,
+`modules/auth/entities/{user,auth-otp}.entity.ts`, `common/decorators/{min-role,section}.decorator.ts`,
 `common/guards/api-key.guard.ts`, `common/mail/*`, `common/dto/signup.dto.ts`.
 
 UI: `app/signup/page.tsx`, `app/users/page.tsx`, `app/login/page.tsx`,
-`hooks/useRole.tsx`, `lib/api.ts`, `lib/public-routes.ts`, `components/{Sidebar,Topbar}.tsx`.
+`hooks/useRole.tsx`, `lib/{api,access,public-routes}.ts`, `components/{Sidebar,Topbar,AccessGate}.tsx`.
 
 ## Verified
 

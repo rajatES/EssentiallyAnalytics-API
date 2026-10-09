@@ -1,8 +1,10 @@
 import { Controller, Get, Query } from '@nestjs/common';
 import { CombinedProductionService } from './combined-production.service';
+import { Section } from '../../common/decorators/section.decorator';
 
 /** Yahoo and Critical Flow production in one place. */
 @Controller('v1/production')
+@Section('cf')
 export class CombinedProductionController {
   constructor(private readonly combined: CombinedProductionService) {}
 

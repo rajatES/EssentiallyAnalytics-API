@@ -14,8 +14,10 @@ import { Public } from '../../common/decorators/public.decorator';
 import { MsnFilterParams } from './types';
 import { MinRole } from '../../common/decorators/min-role.decorator';
 import { UserRole } from '../auth/entities/user.entity';
+import { Section } from '../../common/decorators/section.decorator';
 
 @Controller('v1/msn-production')
+@Section('sm')
 export class MsnProductionController {
   constructor(
     private readonly service: MsnProductionService,

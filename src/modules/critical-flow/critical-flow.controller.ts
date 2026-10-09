@@ -3,8 +3,10 @@ import { CriticalFlowService } from './critical-flow.service';
 import { CfFilterParams } from './types';
 import { MinRole } from '../../common/decorators/min-role.decorator';
 import { UserRole } from '../auth/entities/user.entity';
+import { Section } from '../../common/decorators/section.decorator';
 
 @Controller('v1/critical-flow')
+@Section('cf')
 export class CriticalFlowController {
   constructor(private readonly service: CriticalFlowService) {}
 

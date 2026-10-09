@@ -10,8 +10,10 @@ import {
 import { EmailReportsService } from './email-reports.service';
 import { MinRole } from '../../common/decorators/min-role.decorator';
 import { UserRole } from '../auth/entities/user.entity';
+import { Section } from '../../common/decorators/section.decorator';
 
 @Controller('v1/email-reports')
+@Section('sm')
 export class EmailReportsController {
   constructor(private readonly service: EmailReportsService) {}
 

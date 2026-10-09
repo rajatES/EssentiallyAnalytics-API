@@ -10,9 +10,10 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Request } from 'express';
 import { User, UserRole } from '../../modules/auth/entities/user.entity';
-import { hasRole } from '../../modules/auth/roles';
+import { hasRole, inSection, type AppSection } from '../../modules/auth/roles';
 import { IS_PUBLIC_KEY } from '../decorators/public.decorator';
 import { MIN_ROLE_KEY } from '../decorators/min-role.decorator';
+import { SECTION_KEY } from '../decorators/section.decorator';
 
 @Injectable()
 export class ApiKeyGuard implements CanActivate {
@@ -62,6 +63,14 @@ export class ApiKeyGuard implements CanActivate {
     ]);
     if (minRole && !hasRole(user.role, minRole)) {
       throw new ForbiddenException('Your access level does not allow this action');
+    }
+
+    const section = this.reflector.getAllAndOverride<AppSection | undefined>(SECTION_KEY, [
+      context.getHandler(),
+      context.getClass(),
+    ]);
+    if (section && !inSection(user.role, section)) {
+      throw new ForbiddenException('Your access does not cover this part of the app');
     }
     return true;
   }

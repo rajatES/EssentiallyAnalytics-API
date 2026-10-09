@@ -17,8 +17,10 @@ import { PageMapping } from './entities/page-mapping.entity';
 import { PagePathMapping } from './entities/page-path-mapping.entity';
 import { UserRole } from '../auth/entities/user.entity';
 import { MinRole } from '../../common/decorators/min-role.decorator';
+import { Section } from '../../common/decorators/section.decorator';
 
 @Controller('page-mappings')
+@Section('sm')
 export class PageMappingsController {
   constructor(private readonly service: PageMappingsService) {}
 

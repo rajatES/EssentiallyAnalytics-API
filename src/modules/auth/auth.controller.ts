@@ -63,7 +63,8 @@ export class AuthController {
     } = await this.authService.login(email, password);
 
     setSession(res, apiKey, role);
-    return { message, email: userEmail };
+    // The role tells the login page which section to land on.
+    return { message, email: userEmail, role };
   }
 
   @Get('me')

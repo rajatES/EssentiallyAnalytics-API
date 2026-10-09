@@ -3,8 +3,10 @@ import { StableProductionService } from './stable-production.service';
 import { StableFilterParams } from './types';
 import { MinRole } from '../../common/decorators/min-role.decorator';
 import { UserRole } from '../auth/entities/user.entity';
+import { Section } from '../../common/decorators/section.decorator';
 
 @Controller('v1/stable-production')
+@Section('cf')
 export class StableProductionController {
   constructor(private readonly service: StableProductionService) {}
 

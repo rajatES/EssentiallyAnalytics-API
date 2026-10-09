@@ -1,7 +1,13 @@
 import { Controller, Get, Patch, Param, Body, Query } from '@nestjs/common';
 import { RevenueService } from './revenue.service';
+import { Section } from '../../common/decorators/section.decorator';
+import { MinRole } from '../../common/decorators/min-role.decorator';
+import { UserRole } from '../auth/entities/user.entity';
 
+// Revenue is the one Social Media page its plain users do not get.
 @Controller('v1/revenue')
+@Section('sm')
+@MinRole(UserRole.MANAGEMENT)
 export class RevenueController {
   constructor(private readonly revenueService: RevenueService) { }
 

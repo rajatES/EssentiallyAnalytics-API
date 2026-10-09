@@ -12,8 +12,10 @@ import { FileInterceptor } from '@nestjs/platform-express';
 import { AnalyticsService } from './utm-analytics.service';
 import { MinRole } from '../../common/decorators/min-role.decorator';
 import { UserRole } from '../auth/entities/user.entity';
+import { Section } from '../../common/decorators/section.decorator';
 
 @Controller('v1/analytics')
+@Section('sm')
 export class AnalyticsController {
   constructor(private readonly analyticsService: AnalyticsService) {}
 

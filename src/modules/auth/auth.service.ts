@@ -213,9 +213,10 @@ export class AuthService implements OnModuleInit {
   }
 
   /**
-   * Step 3: set the password — creating the account as a plain user if it is
-   * new, or resetting it if not — and sign in. A reset rotates the session key,
-   * which signs the account out everywhere else.
+   * Step 3: set the password — creating the account if it is new, with no
+   * section until the superadmin gives it one, or resetting it if not — and
+   * sign in. A reset rotates the session key, which signs the account out
+   * everywhere else.
    */
   async setPassword(
     rawEmail: string,

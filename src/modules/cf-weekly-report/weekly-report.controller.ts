@@ -1,7 +1,9 @@
 import { Controller, Get, Query } from '@nestjs/common';
 import { WeeklyReportService } from './weekly-report.service';
+import { Section } from '../../common/decorators/section.decorator';
 
 @Controller('v1/cf-weekly-report')
+@Section('cf')
 export class WeeklyReportController {
   constructor(private readonly service: WeeklyReportService) {}
 

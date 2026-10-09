@@ -25,12 +25,14 @@ import {
 } from '../../../common/headline-windows';
 import { MinRole } from '../../../common/decorators/min-role.decorator';
 import { UserRole } from '../../auth/entities/user.entity';
+import { Section } from '../../../common/decorators/section.decorator';
 
 /** Safety cap for profileIds arrays to avoid unbounded IN clauses */
 const MAX_PROFILE_IDS = 50;
 const DEBUG_LIMIT = 200;
 
 @Controller('api/analytics')
+@Section('sm')
 export class AnalyticsController {
   constructor(
     @InjectRepository(SocialProfile)

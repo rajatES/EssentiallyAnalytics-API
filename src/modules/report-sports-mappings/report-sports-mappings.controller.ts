@@ -1,7 +1,9 @@
 import { Controller, Get, Patch, Post, Body, Param } from '@nestjs/common';
 import { ReportSportsMappingsService } from './report-sports-mappings.service';
+import { Section } from '../../common/decorators/section.decorator';
 
 @Controller('v1/report-sports-mappings')
+@Section('sm')
 export class ReportSportsMappingsController {
   constructor(private readonly service: ReportSportsMappingsService) {}
 

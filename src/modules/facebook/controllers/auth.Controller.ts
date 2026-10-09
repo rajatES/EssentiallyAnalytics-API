@@ -19,11 +19,13 @@ import {
 } from '../services/meta.service';
 import { MinRole } from '../../../common/decorators/min-role.decorator';
 import { UserRole } from '../../auth/entities/user.entity';
+import { Section } from '../../../common/decorators/section.decorator';
 
 // Disconnect key for profiles connected before connectedViaId was recorded.
 const LEGACY_GRANTOR = 'legacy';
 
 @Controller('api/auth/meta')
+@Section('sm')
 export class AuthController {
   constructor(
     @InjectRepository(SocialProfile)
