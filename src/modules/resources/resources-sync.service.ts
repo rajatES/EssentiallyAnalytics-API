@@ -172,8 +172,7 @@ export class ResourcesSyncService implements OnModuleInit {
       const id = t(c.id);
       const name = t(c.name);
       if (!id || !name) continue;
-      const e = new ResPerson();
-      Object.assign(e, {
+      const fields = {
         id,
         name,
         primaryDivision: t(c.division) || 'Unknown',
@@ -190,7 +189,13 @@ export class ResourcesSyncService implements OnModuleInit {
         status: t(c.employment),
         team: t(c.team),
         flags: t(c.flags),
-        rawHash: computeRowHash([PARSE_VERSION, ...row]),
+      };
+      // Hashed on what is stored, not on the raw row: when the columns read
+      // change (Team and Employment arriving), an unchanged sheet row must
+      // still be rewritten, or it keeps the old blanks forever.
+      const e = new ResPerson();
+      Object.assign(e, fields, {
+        rawHash: computeRowHash([PARSE_VERSION, ...Object.values(fields).map((v) => (Array.isArray(v) ? v.join(',') : v))]),
       });
       out.push(e);
     }
