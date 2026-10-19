@@ -41,9 +41,8 @@ function intOr(raw: any, fallback: number): number {
 
 /**
  * Syncs people, leave and quotas from the aggregate sheet's People / Leaves /
- * Quotas tabs, which the n8n resources lane rebuilds from the managers'
- * Dynamic Schedule workbook. All parsing of that workbook happens in n8n; this
- * side only maps columns.
+ * Quotas tabs, which the n8n resources lane rebuilds from the Team Structure
+ * tab. All parsing of that tab happens in n8n; this side only maps columns.
  */
 @Injectable()
 export class ResourcesSyncService implements OnModuleInit {
@@ -110,7 +109,7 @@ export class ResourcesSyncService implements OnModuleInit {
       });
       const res = await sheets.spreadsheets.values.batchGet({
         spreadsheetId: sheetId,
-        ranges: ["'People'!A:P", "'Leaves'!A:H", "'Quotas'!A:J"],
+        ranges: ["'People'!A:Z", "'Leaves'!A:H", "'Quotas'!A:J"],
         valueRenderOption: 'UNFORMATTED_VALUE',
         dateTimeRenderOption: 'SERIAL_NUMBER',
       });
@@ -129,11 +128,13 @@ export class ResourcesSyncService implements OnModuleInit {
       await this.replaceTable(this.peopleRepo, ResPerson, people, 'people');
       await this.replaceTable(this.leaveRepo, ResLeave, this.parseLeaves(leaveRows || []), 'leave records');
 
-      const quotas = this.parseQuotas(quotaRows || []);
-      if (quotas.length) {
-        await this.replaceTable(this.quotaRepo, ResDivisionQuota, quotas, 'division quotas');
+      // A header with nothing under it is the lane saying "no quotas" — Team
+      // Structure carries none — so the old ones are cleared. Only a tab with
+      // no header at all (never written) leaves the previous quotas alone.
+      if (quotaRows?.length) {
+        await this.replaceTable(this.quotaRepo, ResDivisionQuota, this.parseQuotas(quotaRows), 'division quotas');
       } else {
-        this.logger.warn('Resources: Quotas tab is empty, keeping the previous quotas');
+        this.logger.warn('Resources: Quotas tab has no header, keeping the previous quotas');
       }
 
       this.lastSyncTime = new Date();
@@ -158,7 +159,7 @@ export class ResourcesSyncService implements OnModuleInit {
       id: at('ID'), name: at('Name'), division: at('Primary Division'), subFeed: at('Sub Feed'),
       secondary: at('Secondary Divisions'), role: at('Role'), roleGroup: at('Role Group'),
       pod: at('Pod'), shift: at('Shift'), clock: at('Shift Clock'), weekoff: at('Week Off'),
-      plan: at('Week Plan'), backup: at('Backup'), status: at('Status'), sources: at('Sources'),
+      plan: at('Week Plan'), backup: at('Backup'), employment: at('Employment'), team: at('Team'),
       flags: at('Flags'),
     };
     if (c.id < 0 || c.name < 0 || c.division < 0) {
@@ -186,8 +187,8 @@ export class ResourcesSyncService implements OnModuleInit {
         weekoff: t(c.weekoff),
         weekPlan: t(c.plan) || '{}',
         backup: t(c.backup),
-        status: t(c.status),
-        sources: t(c.sources),
+        status: t(c.employment),
+        team: t(c.team),
         flags: t(c.flags),
         rawHash: computeRowHash([PARSE_VERSION, ...row]),
       });

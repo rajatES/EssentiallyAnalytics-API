@@ -2,12 +2,11 @@ import { Entity, Column, PrimaryColumn, Index } from 'typeorm';
 
 /**
  * One person from the aggregate sheet's People tab, which the n8n resources
- * lane builds from the managers' "Dynamic Schedule" workbook (Writer Info,
- * Editor Info and Roles & Contact merged). The one people list for Critical
- * Flow and Yahoo alike.
+ * lane builds from the "Team Structure" tab of the managers' Operational
+ * Dashboard workbook. The one people list for Critical Flow and Yahoo alike.
  *
- * The cf_ table name predates Yahoo sharing it; it is kept so existing
- * deployments need no migration.
+ * The cf_ table name and some column names predate Team Structure; they are
+ * kept so existing deployments need no migration.
  */
 @Entity('cf_schedule_person')
 export class ResPerson {
@@ -19,7 +18,11 @@ export class ResPerson {
   @Column()
   name: string;
 
-  /** Canonical division; "Associate" for the floating editor pool. */
+  /**
+   * Canonical division; "Associate" / "Newsroom" for the floating editor pools.
+   * A vertical with no Critical Flow or Yahoo content ("NetflixJunkie", "ES
+   * Daily") is kept as written and flagged off-desk.
+   */
   @Index()
   @Column({ default: 'Unknown' })
   primaryDivision: string;
@@ -28,11 +31,11 @@ export class ResPerson {
   @Column({ default: '' })
   subFeed: string;
 
-  /** Other divisions the sheet lists them under (Editor Info "NFL/CFB"). */
+  /** Other verticals the sheet lists them under ("College Football NCAA / Tennis"). */
   @Column({ type: 'simple-array', default: '' })
   secondaryDivisions: string[];
 
-  /** Free text from the sheet — "Writer", "Producer (Editor)", "Associate Editor". */
+  /** Role / Designation as written — "Writer", "Producer", "NL Editor", "Sub-Group Head". */
   @Column({ default: '' })
   role: string;
 
@@ -41,7 +44,7 @@ export class ResPerson {
   @Column({ default: 'other' })
   roleGroup: string;
 
-  /** Pod | Non-pod | Associate | '' */
+  /** Pod | Non-pod | Stables | Associate | Newsroom | '' */
   @Column({ default: '' })
   pod: string;
 
@@ -49,33 +52,34 @@ export class ResPerson {
   @Column({ default: '' })
   shift: string;
 
-  /** Clock hours as written, e.g. "6 PM - 3 AM". */
+  /** Hours as written, e.g. "6 PM - 3 AM"; a bare start time as "8 AM". */
   @Column({ default: '' })
   shiftClock: string;
 
+  /** Full day names, e.g. "Thursday"; comma-separated when there are several. */
   @Column({ default: '' })
   weekoff: string;
 
   /**
-   * Per-weekday status from Editor Info, JSON: { Mon: { off: true, coverBy: "Aadesh" }, … }.
-   * Empty object for people that tab does not list.
+   * Per-weekday rota, JSON: { Monday: { off: true, coverBy: "Aadesh" }, … }.
+   * Team Structure has no rota, so this is '{}' until a source provides one.
    */
   @Column({ type: 'text', default: '{}' })
   weekPlan: string;
 
-  /** Standing backup named in Editor Info. */
+  /** Named backups in the sheet's order (1st, 2nd, …), comma-separated. */
   @Column({ default: '' })
   backup: string;
 
-  /** Active | Inactive | '' from Roles & Contact. */
+  /** Full-time | Part-time | '' from the FT/PT column. Exited / Inactive also count as off. */
   @Column({ default: '' })
   status: string;
 
-  /** Which tabs contributed, e.g. "Writer Info,Editor Info". */
-  @Column({ default: '' })
-  sources: string;
+  /** Team Structure's Division column: "Critical Flow", "Newsletter", or ''. */
+  @Column({ name: 'sources', default: '' })
+  team: string;
 
-  /** Data-quality notes raised while merging tabs, e.g. "role-conflict". */
+  /** Data-quality notes from the lane, e.g. "duplicate-row", "off-desk", "week-off-unclear". */
   @Column({ default: '' })
   flags: string;
 

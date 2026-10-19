@@ -4,7 +4,7 @@ import { Repository } from 'typeorm';
 import { CfPiece } from '../critical-flow/entities/cf-piece.entity';
 import { YpPiece } from '../yahoo-production/entities/yp-piece.entity';
 import { YpDivisionQuota } from '../yahoo-production/entities/yp-division-quota.entity';
-import { NameResolver, buildNameResolver } from '../production/name-resolver';
+import { NameResolver, buildNameResolver, isPersonName } from '../production/name-resolver';
 import { ResPerson } from './entities/res-person.entity';
 import { ResLeave } from './entities/res-leave.entity';
 import { ResDivisionQuota } from './entities/res-division-quota.entity';
@@ -62,6 +62,8 @@ interface Ctx {
   /** board division → Yahoo's daily quota for it */
   yahooQuota: Map<string, number>;
   people: ResourcePerson[];
+  /** Team Structure as synced, leads included, for what the board itself leaves off. */
+  roster: ResPerson[];
 }
 
 function lower(s: string): string {
@@ -102,10 +104,10 @@ const onCfSheet = (w: WorkItem) => w.source !== 'yahoo';
 const onYahooSheet = (w: WorkItem) => w.source !== 'cf';
 
 /**
- * Who can take work now, and who covers whom. People come from the managers'
- * Dynamic Schedule (synced by {@link ResourcesSyncService}); load and output
- * are counted over Critical Flow and Yahoo together, because the same writers
- * and editors work both.
+ * Who can take work now, and who covers whom. People come from the Team
+ * Structure tab (synced by {@link ResourcesSyncService}); load and output are
+ * counted over Critical Flow and Yahoo together, because the same writers and
+ * editors work both.
  */
 @Injectable()
 export class ResourcesService implements OnApplicationBootstrap {
@@ -226,15 +228,19 @@ export class ResourcesService implements OnApplicationBootstrap {
       quotas,
       yahooQuota,
       people: [],
+      roster: sched,
     };
     ctx.people = this.buildPeople(ctx, sched);
     return ctx;
   }
 
   /**
-   * The people universe: the managers' schedule, plus anyone doing work who is
-   * not on it — so a writer nobody has added yet still shows up rather than
-   * vanishing.
+   * The people universe: Team Structure, plus anyone doing work who is not on
+   * it — so a writer nobody has added yet still shows up rather than vanishing.
+   * People in a vertical with no CF or Yahoo content (NetflixJunkie, Content
+   * Strategy), and leads (group heads), are left off unless the content names
+   * them, or the board would carry dozens of permanently "Free" people nobody
+   * can actually assign.
    */
   private buildPeople(ctx: Ctx, sched: ResPerson[]): ResourcePerson[] {
     const out = new Map<string, PersonBase>();
@@ -260,6 +266,13 @@ export class ResourcesService implements OnApplicationBootstrap {
 
     for (const s of sched) {
       if (seen.has(identity(s.primaryDivision, s.name))) continue;
+      if (
+        (s.roleGroup === 'lead' || s.flags.split(',').includes('off-desk')) &&
+        !this.contentKeys(ctx, ctx.byWriter, s.name, s.primaryDivision).length &&
+        !this.contentKeys(ctx, ctx.byEditor, s.name, s.primaryDivision).length
+      ) {
+        continue;
+      }
       note(s.primaryDivision, s.name);
       const key = keyOf(s.primaryDivision, s.name);
       out.set(key, {
@@ -285,7 +298,7 @@ export class ResourcesService implements OnApplicationBootstrap {
     // Content-only people: doing the work, not on the schedule.
     const contentSeen = new Set<string>();
     for (const [lname, divs] of ctx.worked) {
-      if (listedNames.has(lname) || contentSeen.has(lname)) continue;
+      if (listedNames.has(lname) || contentSeen.has(lname) || !isPersonName(lname)) continue;
       contentSeen.add(lname);
       const total = [...divs.values()].reduce((a, b) => a + b, 0);
       if (total < UNLISTED_MIN_PIECES) continue;
@@ -318,7 +331,20 @@ export class ResourcesService implements OnApplicationBootstrap {
     // Keys are settled before anyone's profile is looked up, so an old-spelling
     // profile is only adopted when no one on the board answers to it exactly.
     for (const k of out.keys()) ctx.ownedKeys.add(k);
-    return [...out.values()].map((b) => this.materialise(ctx, b)).sort(
+    const people = [...out.values()].map((b) => this.materialise(ctx, b));
+
+    // Cover goes to the first named backup who is working today, not simply
+    // the first one named — a backup on their own week off covers nobody.
+    for (const p of people) {
+      if (!p.offToday || !p.backup || p.coveredBy !== p.backup) continue;
+      const names = backupsOf(p.backup);
+      p.coveredBy =
+        names.find((n) => {
+          const b = findByName(people, n, p.primaryDivision);
+          return !b || !b.offToday;
+        }) ?? names[0];
+    }
+    return people.sort(
       (a, b) => a.primaryDivision.localeCompare(b.primaryDivision) || a.name.localeCompare(b.name),
     );
   }
@@ -462,7 +488,10 @@ export class ResourcesService implements OnApplicationBootstrap {
 
     if (index.has(exact)) return [exact];
     if (index.has(resolved)) return [resolved];
-    return sameFirst.length === 1 ? sameFirst : [];
+    // A shared first name links only when one side is the bare first name:
+    // "Shreya Verma" is not the content's "Shreya Singh".
+    const only = sameFirst.length === 1 ? sameFirst[0] : '';
+    return only && (!only.includes(' ') || !exact.includes(' ')) ? [only] : [];
   }
 
   private workFor(ctx: Ctx, index: Map<string, WorkItem[]>, name: string, division: string): WorkItem[] {
@@ -560,6 +589,15 @@ export class ResourcesService implements OnApplicationBootstrap {
     for (const d of ctx.yahooQuota.keys()) divisions.add(d);
     divisions.delete('Unknown');
 
+    // Division Update used to name each division's PoC; Team Structure names
+    // its leads instead — the Group Head, or the Sub-Group Heads without one.
+    const leadsOf = (division: string) => {
+      const leads = ctx.roster.filter((p) => p.primaryDivision === division && p.roleGroup === 'lead');
+      const heads = leads.filter((p) => /^group head/i.test(p.role));
+      const subHeads = leads.filter((p) => /^sub[\s-]*group head/i.test(p.role));
+      return (heads.length ? heads : subHeads).map((p) => p.name).join(', ');
+    };
+
     const rows: DivisionResourceSummary[] = [];
     for (const division of [...divisions].sort()) {
       const quotas = ctx.quotas.filter((q) => q.division === division);
@@ -602,7 +640,7 @@ export class ResourcesService implements OnApplicationBootstrap {
 
       rows.push({
         division,
-        poc: quotas.find((q) => q.poc)?.poc || '',
+        poc: quotas.find((q) => q.poc)?.poc || leadsOf(division),
         architecture: quotas.find((q) => q.architecture)?.architecture || '',
         quotaEmp, quotaLnp, quotaTotal,
         quotaMissing: quotas.length === 0,
@@ -667,7 +705,9 @@ export class ResourcesService implements OnApplicationBootstrap {
     const absent = params.forPerson
       ? ctx.people.find((p) => lower(p.name) === lower(params.forPerson!) || p.key === params.forPerson)
       : undefined;
-    const backupName = absent?.backup ? lower(absent.backup) : '';
+    const backups = absent?.backup
+      ? backupsOf(absent.backup).map((n) => findByName(ctx.people, n, absent.primaryDivision))
+      : [];
 
     const candidates: SuggestCandidate[] = [];
     for (const p of ctx.people) {
@@ -679,9 +719,10 @@ export class ResourcesService implements OnApplicationBootstrap {
       let score = 0;
       const reasons: string[] = [];
 
-      if (backupName && firstToken(p.name) === firstToken(backupName)) {
-        score += 100;
-        reasons.push(`Named backup for ${absent!.name}`);
+      const backupRank = backups.indexOf(p);
+      if (backupRank >= 0) {
+        score += 100 - backupRank * 10;
+        reasons.push(`${ordinal(backupRank + 1)} backup for ${absent!.name}`);
       }
       if (p.primaryDivision === 'Associate') {
         score += 60;
@@ -749,50 +790,34 @@ export class ResourcesService implements OnApplicationBootstrap {
       if (items.length) flags.push({ issue, count: items.length, detail, items: items.slice(0, 20) });
     };
 
+    const flagged = (flag: string) =>
+      sched.filter((s) => s.flags.split(',').includes(flag)).map((s) => `${s.name} (${s.primaryDivision})`);
     push(
-      'Role disagrees between tabs',
-      sched.filter((s) => s.flags.includes('role-conflict')).map((s) => `${s.name} (${s.primaryDivision})`),
-      'Writer Info lists them as a writer; Editor Info / Roles & Contact list them as an editor. Treated as an editor.',
+      'Listed twice on Team Structure',
+      flagged('duplicate-row'),
+      'Two rows name the same person. They are merged into one (the fuller name, a CF/Yahoo vertical and the Critical Flow row win); delete the extra row.',
     );
     push(
-      'Marked exited but still listed',
-      sched.filter((s) => s.flags.includes('exited')).map((s) => `${s.name} (${s.primaryDivision})`),
-      'Roles & Contact\'s exit list names them, but Writer Info or Editor Info still has them. Shown as inactive.',
+      'Week off not readable',
+      flagged('week-off-unclear'),
+      'The WO cell holds something other than a day ("Full-Time", "Sunday (varies in October)"). Only the day names found in it are used.',
     );
     push(
-      'Quota differs between DailyDynamics and Editorial Chart',
-      quotas.filter((q) => q.editorialChartTotal != null)
-        .map((q) => `${q.sourceName}: ${q.total} vs ${q.editorialChartTotal}`),
-      'DailyDynamics is used; the Editorial Chart figure is shown alongside on the summary.',
+      'No Division given',
+      flagged('no-team'),
+      "Team Structure's Division column is blank, so they are left out of the weekly report.",
     );
-    const attached = new Set<string>();
-    for (const s of sched) for (const l of ctx.leavesFor(s.name)) attached.add(l.id);
     push(
-      'Leave logged for a name not on any schedule tab',
-      [...new Set(leaves.filter((l) => !attached.has(l.id)).map((l) => l.name))],
-      'These leave records cannot be attached to one person, so they will not mark anyone Off. A first name alone only attaches when nobody else shares it.',
+      'Vertical outside Critical Flow and Yahoo',
+      flagged('off-desk'),
+      'Their Sports / Vertical has no Critical Flow or Yahoo content, so they appear on the board only when the content names them.',
     );
-    if (!leaves.some((l) => l.roleTag === 'writer')) {
-      flags.push({
-        issue: 'No writer leave recorded',
-        count: 1,
-        detail: 'CF Writer Leaves has nothing recent. Writers will never show as On leave until it is used.',
-        items: [],
-      });
-    }
     const undatedByDiv = new Map<string, number>();
     for (const w of ctx.items) if (!w.date) undatedByDiv.set(w.division, (undatedByDiv.get(w.division) ?? 0) + 1);
     push(
       'Pieces with no timestamps',
       [...undatedByDiv.entries()].sort((a, b) => b[1] - a[1]).map(([d, n]) => `${d}: ${n}`),
       'These cannot count toward anyone\'s output today, so those writers will look quieter than they are.',
-    );
-    const quotaDivs = new Set(quotas.map((q) => q.division));
-    push(
-      'Division with Critical Flow content but no quota',
-      [...new Set(ctx.items.filter(onCfSheet).map((w) => w.division))]
-        .filter((d) => d !== 'Unknown' && !quotaDivs.has(d)),
-      'Gap-to-quota cannot be computed for these.',
     );
     const unknownYahoo = new Map<string, number>();
     for (const y of yp) {
@@ -812,9 +837,9 @@ export class ResourcesService implements OnApplicationBootstrap {
       }))
       .sort((a, b) => b.pieces - a.pieces);
     push(
-      'Working but not on the schedule',
+      'Working but not on Team Structure',
       unlisted.map((u) => `${u.label} ×${u.pieces}`),
-      'Writing or editing on the content sheets, but not in Writer Info, Editor Info or Roles & Contact. Add them there so leave, shift and backup apply — until then they show with no schedule details.',
+      'Writing or editing on the content sheets under a name Team Structure does not have. Add them (or fix the spelling) so shift, week off and backups apply — until then they show with no details.',
     );
 
     // Two spellings of what is almost certainly one person inside a division.
@@ -833,11 +858,13 @@ export class ResourcesService implements OnApplicationBootstrap {
           const b = lower(names[j]);
           const fa = firstToken(a);
           const fb = firstToken(b);
-          // Same first name, a one-letter slip in the first name ("Maleeha" /
-          // "Maleehah Shakeel"), or a one-letter slip anywhere in a longish name.
+          // A bare first name next to a full one ("Dhruv" / "Dhruv Singh"), a
+          // one-letter slip in the first name ("Maleeha" / "Maleehah Shakeel"),
+          // or one anywhere in a longish name. Two full names sharing only a
+          // first name (Dhruv George, Dhruv Singh) are two people.
           if (
-            fa === fb ||
-            (fa.length >= 5 && editDistance(fa, fb) <= 1) ||
+            (fa === fb && (!a.includes(' ') || !b.includes(' '))) ||
+            (fa !== fb && fa.length >= 5 && editDistance(fa, fb) <= 1) ||
             (a.length >= 6 && editDistance(a, b) <= 1)
           ) {
             similar.push(`${division}: ${names[i]} / ${names[j]}`);
@@ -974,6 +1001,37 @@ function editDistance(a: string, b: string): number {
     prev[b.length] = left;
   }
   return prev[b.length];
+}
+
+/** "Koushik, Pratyusha" → in the sheet's order of preference. */
+function backupsOf(list: string): string[] {
+  return list.split(',').map((s) => s.trim()).filter(Boolean);
+}
+
+function ordinal(n: number): string {
+  return n === 1 ? '1st' : n === 2 ? '2nd' : n === 3 ? '3rd' : `${n}th`;
+}
+
+/**
+ * The one person a name in the backup columns can mean. The columns use first
+ * names ("Koushik") and the odd misspelling ("Murtaza" for Murtuza); two
+ * people sharing a first name are told apart by division, or not at all.
+ */
+function findByName<T extends { name: string; primaryDivision: string }>(
+  people: T[],
+  name: string,
+  division?: string,
+): T | undefined {
+  const l = lower(name.trim());
+  const exact = people.find((p) => lower(p.name) === l);
+  if (exact) return exact;
+  const f = firstToken(l);
+  let same = people.filter((p) => firstToken(p.name) === f);
+  if (!same.length && f.length >= 5) {
+    same = people.filter((p) => editDistance(firstToken(p.name), f) <= 1);
+  }
+  if (same.length > 1 && division) same = same.filter((p) => p.primaryDivision === division);
+  return same.length === 1 ? same[0] : undefined;
 }
 
 function safeJson(s: string): Record<string, any> {

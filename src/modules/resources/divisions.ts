@@ -6,7 +6,7 @@ export interface DivisionRef {
 }
 
 /**
- * Division labels as the managers and the Yahoo sheet write them, mapped onto
+ * Division labels as Team Structure and the Yahoo sheet write them, mapped onto
  * the Critical Flow content divisions — the one vocabulary the resources board
  * speaks. Tennis and Olympics are the two halves of US Sports and keep their
  * sub-feed so quotas can meet the matching "(Tennis)" / "(Olympics)" month tabs.
@@ -16,7 +16,7 @@ export interface DivisionRef {
  */
 const DIVISION_ALIASES: [RegExp, string, string][] = [
   [/^nfl( active)?$/, 'NFL', ''],
-  [/^(cfb|college football)$/, 'College Football', ''],
+  [/^(cfb|college football( ncaa)?)$/, 'College Football', ''],
   [/^nascar$/, 'NASCAR', ''],
   [/^nba( active| legends)?$/, 'NBA', ''],
   [/^wnba(\s*\/\s*ncaa)?$/, 'WNBA', ''],
@@ -24,11 +24,12 @@ const DIVISION_ALIASES: [RegExp, string, string][] = [
   [/^golf$/, 'Golf', ''],
   [/^tennis$/, 'US Sports', 'Tennis'],
   [/^olympics$/, 'US Sports', 'Olympics'],
-  [/^(uss|us sports|us sports \+ olympics|uss\s*\/\s*tennis)$/, 'US Sports', ''],
+  [/^(uss|us sports|us sports \+ olympics|tennis \+ olympics|olympics \+ tennis|uss\s*\/\s*tennis)$/, 'US Sports', ''],
   [/^mlb$/, 'MLB', ''],
   [/^associates?$/, 'Associate', ''],
   [/^(newsroom|nr)( le| lead| editor)?$/, 'Newsroom', ''],
-  [/^basketball\s*news$/, 'Basketball News', ''],
+  [/^(basketball\s*news|bb\s*news)$/, 'Basketball News', ''],
+  [/^stables?$/, 'Stables', ''],
 ];
 
 /** Pools whose people float across every division rather than owning one. */

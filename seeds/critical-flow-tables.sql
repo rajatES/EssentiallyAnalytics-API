@@ -76,7 +76,7 @@ CREATE TABLE IF NOT EXISTS cf_roster (
 CREATE INDEX IF NOT EXISTS cf_roster_division_idx  ON cf_roster ("division");
 CREATE INDEX IF NOT EXISTS cf_roster_rolegroup_idx ON cf_roster ("roleGroup");
 
--- ── People as the managers' Dynamic Schedule workbook describes them ──
+-- ── People as the managers' Team Structure tab describes them ──
 CREATE TABLE IF NOT EXISTS cf_schedule_person (
   "id"                 character varying PRIMARY KEY,
   "name"               character varying NOT NULL,
