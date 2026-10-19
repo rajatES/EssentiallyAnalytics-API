@@ -1,16 +1,15 @@
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { LessThanOrEqual, MoreThanOrEqual, Repository } from 'typeorm';
+import { Repository } from 'typeorm';
 import { round } from '../production/analytics';
+import { isPersonName } from '../production/name-resolver';
 import { shiftDate, todayIst } from '../production/time';
 import {
   CombinedProductionResult,
   CombinedProductionService,
   NO_WRITER,
 } from '../resources/combined-production.service';
-import { ResLeave } from '../resources/entities/res-leave.entity';
 import { ResPerson } from '../resources/entities/res-person.entity';
-import { SpRosterPerson } from '../stable-production/entities/sp-roster.entity';
 import {
   GroupKey,
   ReportGroup,
@@ -20,10 +19,11 @@ import {
   WeeklyReport,
 } from './types';
 
-const WEEKS_SHOWN = 4;
+const DEFAULT_WEEKS = 4;
+const MAX_WEEKS = 8;
 
 /**
- * The groups and targets of the desk's own Week on Week sheet, in its order.
+ * The groups and targets of the desk's Week on Week sheet, in its order.
  * Targets are its "ideal efficiency": output per person per day worked.
  */
 const GROUPS: Record<
@@ -32,16 +32,20 @@ const GROUPS: Record<
 > = {
   stables: { name: 'Stables writers', target: 4, measure: 'submitted' },
   'part-time': { name: 'Part-time writers', target: 4, measure: 'submitted' },
-  msn: { name: 'Writers moved from MSN', target: 5, measure: 'submitted' },
   tenured: { name: 'Tenured writers', target: 5, measure: 'submitted' },
   editors: { name: 'Editors', target: 15, measure: 'published' },
-  producers: { name: 'Producers', target: 5, measure: 'by role' },
+  'associate-editors': {
+    name: 'Associate editors',
+    target: null,
+    measure: 'published',
+  },
+  newsroom: { name: 'Newsroom editors', target: null, measure: 'published' },
+  producers: { name: 'Producers', target: 5, measure: 'submitted' },
+  associates: { name: 'Associates', target: null, measure: 'written' },
   pod: { name: 'Pod', target: null, measure: 'written' },
   'non-pod': { name: 'Non-pod', target: null, measure: 'written' },
-  associates: { name: 'Associates', target: null, measure: 'written' },
-  'stables-editors': { name: 'Stables', target: null, measure: 'written' },
   unlisted: {
-    name: 'Not on the schedule',
+    name: 'Not on Team Structure',
     target: null,
     measure: 'submitted',
   },
@@ -65,61 +69,68 @@ const dayOfWeek = (date: string) => new Date(`${date}T00:00:00Z`).getUTCDay();
 /** The Sunday closing the Monday-to-Sunday week `date` falls in. */
 const weekEndOf = (date: string) => shiftDate(date, (7 - dayOfWeek(date)) % 7);
 
-const tally = (
-  output: number,
-  daysWorked: number,
-  active: number,
-): WeekTally => ({
-  output,
-  daysWorked,
-  active,
-  perDay: daysWorked > 0 ? round(output / daysWorked, 2) : null,
-});
-
 /**
- * Where a person on the schedule belongs, read from the Role the managers
- * write: producers by role, part-time and ex-MSN writers by a "(Part-time)" or
- * "(MSN)" in it, other writers as tenured. Editors other than producers are
- * placed by pod for their own writing, and the non-pod desks and associates
- * also for what they publish. Leads and the newsroom are outside the report,
- * as they are outside the sheet.
+ * Where a person on Team Structure belongs, read from the columns the managers
+ * keep: Role / Designation, FT/PT, Pod/Non-Pod and Sports / Vertical.
+ *
+ * - Writers: Stables, then part-time by FT/PT, the rest tenured.
+ * - Producers: by what they write.
+ * - Editors publish (the Editors block: non-pod desks, associates and the
+ *   newsroom each on their own, so the newsroom's Yahoo publishing does not
+ *   drag the desk editors' average), and their own writing is the Pod /
+ *   Non-pod / Associates block. "NL Editor" counts: on the pod desks it is the
+ *   editor's title.
+ * - Leads, and anyone on another team (Newsletter), are outside the report.
  */
 function placementsOf(p: ResPerson): Placement[] {
-  if (/^producer/i.test(p.role)) {
-    return [
-      {
-        group: 'producers',
-        as: p.roleGroup === 'editor' ? 'editor' : 'writer',
-      },
-    ];
-  }
-  if (p.roleGroup === 'writer') {
-    const group: GroupKey = /part.?time/i.test(p.role)
-      ? 'part-time'
-      : /\bmsn\b/i.test(p.role)
-        ? 'msn'
+  const stables = /^stables$/i.test(p.pod) || p.primaryDivision === 'Stables';
+  if (/writer/i.test(p.role) || (stables && /producer/i.test(p.role))) {
+    const group: GroupKey = stables
+      ? 'stables'
+      : /part/i.test(p.status)
+        ? 'part-time'
         : 'tenured';
     return [{ group, as: 'writer' }];
   }
+  if (/producer/i.test(p.role)) return [{ group: 'producers', as: 'writer' }];
   if (p.roleGroup !== 'editor') return [];
-  if (/^pod$/i.test(p.pod)) return [{ group: 'pod', as: 'writer' }];
-  if (/^non-pod$/i.test(p.pod)) {
+  if (p.primaryDivision === 'Newsroom')
+    return [{ group: 'newsroom', as: 'editor' }];
+  if (p.primaryDivision === 'Associate') {
     return [
-      { group: 'editors', as: 'editor' },
-      { group: 'non-pod', as: 'writer' },
-    ];
-  }
-  // The associate pool also holds the newsroom backups; the sheet's
-  // Associates row is only those whose role says Associate.
-  if (/^associate$/i.test(p.pod)) {
-    if (!/^associate/i.test(p.role))
-      return [{ group: 'editors', as: 'editor' }];
-    return [
-      { group: 'editors', as: 'editor' },
+      { group: 'associate-editors', as: 'editor' },
       { group: 'associates', as: 'writer' },
     ];
   }
-  return [];
+  if (/^pod$/i.test(p.pod)) return [{ group: 'pod', as: 'writer' }];
+  return [
+    { group: 'editors', as: 'editor' },
+    { group: 'non-pod', as: 'writer' },
+  ];
+}
+
+const tally = (output: number, daysWorked: number): WeekTally => ({
+  output,
+  daysWorked,
+  active: output > 0 ? 1 : 0,
+  perDay: output > 0 && daysWorked > 0 ? round(output / daysWorked, 2) : null,
+});
+
+/** The group's figure: each active member's own rate, averaged. */
+function groupTally(members: WeekTally[]): WeekTally {
+  const active = members.filter((t) => t.output > 0 && t.perDay != null);
+  const output = members.reduce((n, t) => n + t.output, 0);
+  return {
+    output,
+    daysWorked: members.reduce((n, t) => n + t.daysWorked, 0),
+    active: active.length,
+    perDay: active.length
+      ? round(
+          active.reduce((n, t) => n + (t.perDay as number), 0) / active.length,
+          2,
+        )
+      : null,
+  };
 }
 
 @Injectable()
@@ -128,52 +139,51 @@ export class WeeklyReportService {
     private readonly production: CombinedProductionService,
     @InjectRepository(ResPerson)
     private readonly peopleRepo: Repository<ResPerson>,
-    @InjectRepository(SpRosterPerson)
-    private readonly stableRepo: Repository<SpRosterPerson>,
-    @InjectRepository(ResLeave)
-    private readonly leaveRepo: Repository<ResLeave>,
   ) {}
 
-  /** The four weeks ending with the week `end` falls in, never past the last complete one. */
-  async getReport(end?: string): Promise<WeeklyReport> {
+  /**
+   * `weeks` weeks ending with the one `end` falls in. The week in progress can
+   * be shown, counted up to today; by default the report ends on the latest
+   * complete week.
+   */
+  async getReport(end?: string, weeks?: number): Promise<WeeklyReport> {
     const today = todayIst();
-    const latestEnd = shiftDate(today, -(dayOfWeek(today) || 7));
-    const last =
-      end && /^\d{4}-\d{2}-\d{2}$/.test(end) ? weekEndOf(end) : latestEnd;
-    const finalEnd = last > latestEnd ? latestEnd : last;
-    const weeks: ReportWeek[] = Array.from({ length: WEEKS_SHOWN }, (_, i) => {
-      const weekEnd = shiftDate(finalEnd, -7 * (WEEKS_SHOWN - 1 - i));
-      return { start: shiftDate(weekEnd, -6), end: weekEnd };
+    const latestEnd = weekEndOf(today);
+    const lastCompleteEnd = shiftDate(latestEnd, -7);
+    const count = Math.min(
+      Math.max(Math.round(weeks || DEFAULT_WEEKS), 1),
+      MAX_WEEKS,
+    );
+    const asked =
+      end && /^\d{4}-\d{2}-\d{2}$/.test(end) ? weekEndOf(end) : lastCompleteEnd;
+    const finalEnd = asked > latestEnd ? latestEnd : asked;
+    const shown: ReportWeek[] = Array.from({ length: count }, (_, i) => {
+      const weekEnd = shiftDate(finalEnd, -7 * (count - 1 - i));
+      const partial = weekEnd > today;
+      return {
+        start: shiftDate(weekEnd, -6),
+        end: weekEnd,
+        partial,
+        through: partial ? today : weekEnd,
+      };
     });
-    const current = weeks[weeks.length - 1];
 
-    const [people, stableDesk, leave, results] = await Promise.all([
+    const [people, results] = await Promise.all([
       this.peopleRepo.find(),
-      this.stableRepo.find(),
-      this.leaveRepo.find({
-        select: { name: true },
-        where: {
-          leaveStart: LessThanOrEqual(current.start),
-          leaveEnd: MoreThanOrEqual(current.end),
-        },
-      }),
       Promise.all(
-        weeks.map((w) =>
-          this.production.get({ startDate: w.start, endDate: w.end }),
+        shown.map((w) =>
+          this.production.get({ startDate: w.start, endDate: w.through }),
         ),
       ),
     ]);
-    const awayAllWeek = new Set(leave.map((l) => l.name.toLowerCase()));
 
     const members = [
-      ...this.listed(people, stableDesk),
-      ...this.unlisted(people, stableDesk, results),
+      ...this.listed(people, results),
+      ...this.unlisted(people, results),
     ];
-    const rows = members.map((m) =>
-      results.map((r) => this.outputOf(m, r, members)),
-    );
+    const rows = members.map((m) => results.map((r) => this.outputOf(m, r)));
 
-    const latest = weeks.length - 1;
+    const latest = shown.length - 1;
     const groups = (Object.keys(GROUPS) as GroupKey[]).map(
       (key): ReportGroup => {
         const inGroup = members
@@ -183,28 +193,19 @@ export class WeeklyReportService {
               m.group === key && (m.rostered || w.some((t) => t.output > 0)),
           );
         const rostered = inGroup.filter((x) => x.m.rostered).map((x) => x.m);
-        const sum = (wi: number, pick: (t: WeekTally) => number) =>
-          inGroup.reduce((total, x) => total + pick(x.weeks[wi]), 0);
         const perDivision = new Map<string, number>();
-        for (const m of rostered) {
+        for (const m of rostered)
           perDivision.set(m.division, (perDivision.get(m.division) ?? 0) + 1);
-        }
 
         return {
           key,
           ...GROUPS[key],
           rostered: rostered.length,
-          onLeave: rostered.filter((m) => awayAllWeek.has(m.name.toLowerCase()))
-            .length,
           divisions: [...perDivision]
             .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
             .map(([d]) => d),
-          weeks: weeks.map((_, wi) =>
-            tally(
-              sum(wi, (t) => t.output),
-              sum(wi, (t) => t.daysWorked),
-              sum(wi, (t) => t.active),
-            ),
+          weeks: shown.map((_, wi) =>
+            groupTally(inGroup.map((x) => x.weeks[wi])),
           ),
           members: inGroup
             .map(
@@ -212,11 +213,14 @@ export class WeeklyReportService {
                 name: m.name,
                 division: m.division,
                 role: m.role,
+                rostered: m.rostered,
                 weeks: w,
               }),
             )
             .sort(
               (a, b) =>
+                (b.weeks[latest].perDay ?? -1) -
+                  (a.weeks[latest].perDay ?? -1) ||
                 b.weeks[latest].output - a.weeks[latest].output ||
                 a.name.localeCompare(b.name),
             ),
@@ -224,61 +228,66 @@ export class WeeklyReportService {
       },
     );
 
-    return { weeks, latestEnd, groups };
+    return { weeks: shown, latestEnd, lastCompleteEnd, groups };
   }
 
-  private listed(people: ResPerson[], stableDesk: SpRosterPerson[]): Member[] {
+  /**
+   * The Critical Flow team as Team Structure lists it. Someone in a vertical
+   * with no CF or Yahoo content (NetflixJunkie, ES Daily) only shows when the
+   * content names them, and is not counted in the group's roster size.
+   */
+  private listed(
+    people: ResPerson[],
+    results: CombinedProductionResult[],
+  ): Member[] {
     const out: Member[] = [];
     for (const p of people) {
+      if (p.team !== 'Critical Flow' || /^(inactive|exited)$/i.test(p.status))
+        continue;
+      const offDesk = p.flags.split(',').includes('off-desk');
+      if (offDesk && !results.some((r) => this.hasOutput(r, p.name))) continue;
       for (const placed of placementsOf(p)) {
         out.push({
           name: p.name,
           division: p.primaryDivision,
           role: p.role,
           ...placed,
-          rostered: !/^(inactive|exited)$/i.test(p.status),
+          rostered: !offDesk,
         });
       }
-    }
-    // The Stable desk keeps its own roster; someone on both lists is counted once.
-    const seen = new Set(out.map((m) => m.name.toLowerCase()));
-    for (const s of stableDesk) {
-      if (
-        !['writer', 'editor'].includes(s.roleGroup) ||
-        seen.has(s.name.toLowerCase())
-      ) {
-        continue;
-      }
-      out.push({
-        name: s.name,
-        division: 'Stables',
-        role: s.position,
-        group: s.roleGroup === 'writer' ? 'stables' : 'stables-editors',
-        as: 'writer',
-        rostered: true,
-      });
     }
     return out;
   }
 
+  private hasOutput(r: CombinedProductionResult, name: string): boolean {
+    const n = name.toLowerCase();
+    return (
+      r.writers.some((w) => w.writer.toLowerCase() === n) ||
+      r.editors.some((e) => e.editor.toLowerCase() === n)
+    );
+  }
+
   /**
-   * Writers with output who are on no schedule at all. Kept as a group of their
-   * own rather than dropped: about a third of the desk's pieces are theirs, and
-   * the list is what tells the managers who to add.
+   * Writers with output under a name nobody on Team Structure has, on any
+   * team. Kept as a group of their own rather than dropped: the list is what
+   * tells the managers who to add, or which spelling to fix.
    */
   private unlisted(
     people: ResPerson[],
-    stableDesk: SpRosterPerson[],
     results: CombinedProductionResult[],
   ): Member[] {
-    const known = new Set(
-      [...people, ...stableDesk].map((p) => p.name.toLowerCase()),
-    );
+    const known = new Set(people.map((p) => p.name.toLowerCase()));
     const out = new Map<string, Member>();
     for (const r of results) {
       for (const w of r.writers) {
         const key = w.writer.toLowerCase();
-        if (w.writer === NO_WRITER || known.has(key) || out.has(key)) continue;
+        if (
+          w.writer === NO_WRITER ||
+          !isPersonName(w.writer) ||
+          known.has(key) ||
+          out.has(key)
+        )
+          continue;
         out.set(key, {
           name: w.writer,
           division: w.division,
@@ -292,46 +301,14 @@ export class WeeklyReportService {
     return [...out.values()];
   }
 
-  /**
-   * A member's output in one week. Production names people as the roster spells
-   * them; two members sharing a name are told apart by division.
-   */
-  private outputOf(
-    m: Member,
-    week: CombinedProductionResult,
-    all: Member[],
-  ): WeekTally {
+  /** A member's output in one week. Production names people as the roster spells them. */
+  private outputOf(m: Member, week: CombinedProductionResult): WeekTally {
     const name = m.name.toLowerCase();
-    const rows =
-      m.as === 'writer'
-        ? week.writers.map((w) => ({
-            who: w.writer,
-            division: w.division,
-            n: w.submitted.total,
-            days: w.daysWorked,
-          }))
-        : week.editors.map((e) => ({
-            who: e.editor,
-            division: e.division,
-            n: e.published.total,
-            days: e.daysWorked,
-          }));
-    const row = rows.find((r) => r.who.toLowerCase() === name);
-    if (!row) return tally(0, 0, 0);
-
-    const namesakes = all.filter(
-      (x) => x.as === m.as && x.name.toLowerCase() === name,
-    );
-    if (namesakes.length > 1) {
-      const owner =
-        namesakes.find((x) => x.division === row.division) ?? namesakes[0];
-      if (owner !== m) return tally(0, 0, 0);
+    if (m.as === 'writer') {
+      const w = week.writers.find((x) => x.writer.toLowerCase() === name);
+      return w ? tally(w.submitted.total, w.daysWorked ?? 0) : tally(0, 0);
     }
-    const active = row.n > 0 ? 1 : 0;
-    // The sheet averages editors' own writing over the whole week, not days worked.
-    if (GROUPS[m.group].measure === 'written') {
-      return tally(row.n, active * 7, active);
-    }
-    return tally(row.n, row.days ?? 0, active);
+    const e = week.editors.find((x) => x.editor.toLowerCase() === name);
+    return e ? tally(e.published.total, e.daysWorked ?? 0) : tally(0, 0);
   }
 }
