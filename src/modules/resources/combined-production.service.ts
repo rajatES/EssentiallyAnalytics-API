@@ -73,10 +73,16 @@ export interface SheetRoundupResult {
   };
 }
 
+/** A side's or sheet's counts, plus what is still waiting for an editor. */
+export interface RoundupSheetCounts extends RoundupCounts {
+  /** Written in the range and not yet through an editorial pass, as of the last sync. */
+  pendingEditor: number;
+}
+
 export interface RoundupSide {
-  totals: RoundupCounts;
+  totals: RoundupSheetCounts;
   /** One row per source sheet; for Yahoo, one per division on its single sheet. */
-  sheets: ({ sheet: string } & RoundupCounts)[];
+  sheets: ({ sheet: string } & RoundupSheetCounts)[];
 }
 
 interface Piece {
@@ -92,6 +98,8 @@ interface Piece {
   editedAt: Date | null;
   /** Desk day of the last editorial pass, or null when it was never edited. */
   editedDay: string | null;
+  /** Written and still waiting on its first editorial pass. */
+  awaitingEditor: boolean;
   sentBack: boolean;
   /** Submitted or published, yet nothing places it on a day. */
   undated: boolean;
@@ -102,6 +110,16 @@ const MIN_TITLE_KEY = 20;
 
 const split = (): Split => ({ yahoo: 0, nonYahoo: 0, total: 0 });
 const counts = (): RoundupCounts => ({ written: 0, edited: 0, published: 0 });
+const sheetCounts = (): RoundupSheetCounts => ({ ...counts(), pendingEditor: 0 });
+
+interface Outcome {
+  submitted: boolean;
+  verified: boolean;
+  published: boolean;
+  sentBack: boolean;
+  killed: boolean;
+  onHold: boolean;
+}
 
 /**
  * The day a piece's editing counts on: its last pass, so a send-back is one
@@ -109,14 +127,19 @@ const counts = (): RoundupCounts => ({ written: 0, edited: 0, published: 0 });
  * counted; a piece that went live without an editor stamp falls back to its
  * publication date.
  */
-function editedDayOf(
-  lastPass: Date | null | undefined,
-  outcome: { verified: boolean; published: boolean; killed: boolean; onHold: boolean },
-  publishedDay: string | null,
-): string | null {
-  if (!outcome.published && (outcome.killed || outcome.onHold)) return null;
+function editedDayOf(lastPass: Date | null | undefined, o: Outcome, publishedDay: string | null): string | null {
+  if (!o.published && (o.killed || o.onHold)) return null;
   if (lastPass) return opsDayOf(lastPass);
-  return outcome.verified ? publishedDay : null;
+  return o.verified ? publishedDay : null;
+}
+
+/**
+ * Written, with no editorial pass yet. Any sign that an editor finished with
+ * it — a stamp, a verdict, a send-back, publication — rules it out, and a
+ * scrapped or held piece is waiting on no one.
+ */
+function awaitingEditor(lastPass: Date | null | undefined, o: Outcome): boolean {
+  return o.submitted && !lastPass && !o.verified && !o.published && !o.sentBack && !o.killed && !o.onHold;
 }
 const add = (s: Split, yahoo: boolean) => {
   if (yahoo) s.yahoo++;
@@ -180,6 +203,14 @@ export class CombinedProductionService {
         ? p.publishedDate ?? toDateOnly(p.liveAt ?? p.editorAt2 ?? p.editorAt ?? null)
         : null;
       const secondPass = !!known(p.editor2);
+      const outcome: Outcome = {
+        submitted: cfStages.isSubmitted(p),
+        verified: cfStages.isVerified(p),
+        published,
+        sentBack: cfStages.isSentBack(p),
+        killed: cfStages.isKilled(p),
+        onHold: cfStages.isOnHold(p),
+      };
       (twin ? twins : pieces).push({
         yahoo: false,
         division: p.division,
@@ -190,17 +221,9 @@ export class CombinedProductionService {
         submittedDay,
         publishedDay,
         editedAt: (secondPass ? p.editorAt2 ?? p.editorAt : p.editorAt) ?? null,
-        editedDay: editedDayOf(
-          p.editorAt2 ?? p.editorAt,
-          {
-            verified: cfStages.isVerified(p),
-            published,
-            killed: cfStages.isKilled(p),
-            onHold: cfStages.isOnHold(p),
-          },
-          publishedDay,
-        ),
-        sentBack: cfStages.isSentBack(p),
+        editedDay: editedDayOf(p.editorAt2 ?? p.editorAt, outcome, publishedDay),
+        awaitingEditor: awaitingEditor(p.editorAt2 ?? p.editorAt, outcome),
+        sentBack: outcome.sentBack,
         undated: (cfStages.isSubmitted(p) && !submittedDay) || (published && !publishedDay),
       });
     }
@@ -210,6 +233,14 @@ export class CombinedProductionService {
       const published = ypStages.isPublished(y);
       const submittedDay = ypStages.isSubmitted(y) ? (stamp ? opsDayOf(stamp) : y.date) : null;
       const publishedDay = published ? y.publishedDate ?? toDateOnly(y.liveAt ?? null) : null;
+      const outcome: Outcome = {
+        submitted: ypStages.isSubmitted(y),
+        verified: ypStages.isVerified(y),
+        published,
+        sentBack: false,
+        killed: ypStages.isKilled(y),
+        onHold: ypStages.isOnHold(y),
+      };
       pieces.push({
         yahoo: true,
         division: canonicalDivision(y.division).division,
@@ -219,16 +250,8 @@ export class CombinedProductionService {
         submittedDay,
         publishedDay,
         editedAt: y.editorAt ?? null,
-        editedDay: editedDayOf(
-          y.editorAt,
-          {
-            verified: ypStages.isVerified(y),
-            published,
-            killed: ypStages.isKilled(y),
-            onHold: ypStages.isOnHold(y),
-          },
-          publishedDay,
-        ),
+        editedDay: editedDayOf(y.editorAt, outcome, publishedDay),
+        awaitingEditor: awaitingEditor(y.editorAt, outcome),
         sentBack: false,
         undated: (ypStages.isSubmitted(y) && !submittedDay) || (published && !publishedDay),
       });
@@ -377,6 +400,7 @@ export class CombinedProductionService {
    * Written, edited and published per source sheet, Yahoo and Non-Yahoo apart,
    * on the same rules as `get()`: written is submitted, by desk day; published
    * by each sheet's publication date; edited on the desk day of the last pass.
+   * Pending editor is what was written in the range and is still unedited now.
    * Every sheet that has ever synced gets a row, so a quiet one reads 0.
    */
   async roundup(params: { startDate?: string; endDate?: string }): Promise<SheetRoundupResult> {
@@ -387,21 +411,21 @@ export class CombinedProductionService {
       (!params.endDate || day <= params.endDate);
 
     const total = counts();
-    const sides = { yahoo: new Map<string, RoundupCounts>(), nonYahoo: new Map<string, RoundupCounts>() };
-    const sideTotals = { yahoo: counts(), nonYahoo: counts() };
+    const sides = { yahoo: new Map<string, RoundupSheetCounts>(), nonYahoo: new Map<string, RoundupSheetCounts>() };
+    const sideTotals = { yahoo: sheetCounts(), nonYahoo: sheetCounts() };
     const byDay = new Map<string, { yahoo: RoundupCounts; nonYahoo: RoundupCounts }>();
     const dayRow = (d: string) => {
       if (!byDay.has(d)) byDay.set(d, { yahoo: counts(), nonYahoo: counts() });
       return byDay.get(d)!;
     };
     for (const p of twins) {
-      if (!sides.nonYahoo.has(p.sheet)) sides.nonYahoo.set(p.sheet, counts());
+      if (!sides.nonYahoo.has(p.sheet)) sides.nonYahoo.set(p.sheet, sheetCounts());
     }
 
     let undated = 0;
     for (const p of pieces) {
       const side = p.yahoo ? 'yahoo' : 'nonYahoo';
-      if (!sides[side].has(p.sheet)) sides[side].set(p.sheet, counts());
+      if (!sides[side].has(p.sheet)) sides[side].set(p.sheet, sheetCounts());
       const sheet = sides[side].get(p.sheet)!;
       if (p.undated) undated++;
 
@@ -415,6 +439,10 @@ export class CombinedProductionService {
       tally('written', p.submittedDay);
       tally('edited', p.editedDay);
       tally('published', p.publishedDay);
+      if (p.awaitingEditor && inRange(p.submittedDay)) {
+        sideTotals[side].pendingEditor++;
+        sheet.pendingEditor++;
+      }
     }
 
     const days: SheetRoundupResult['days'] = [];
@@ -427,7 +455,7 @@ export class CombinedProductionService {
     }
     days.sort((a, b) => b.date.localeCompare(a.date));
 
-    const sheetRows = (m: Map<string, RoundupCounts>) =>
+    const sheetRows = (m: Map<string, RoundupSheetCounts>) =>
       [...m.entries()]
         .map(([sheet, c]) => ({ sheet, ...c }))
         .sort((a, b) => b.published - a.published || b.written - a.written || a.sheet.localeCompare(b.sheet));
