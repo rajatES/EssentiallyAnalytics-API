@@ -16,6 +16,8 @@ export enum UserRole {
   SM_USER = 'sm_user',
   CF_MANAGER = 'cf_manager',
   CF_USER = 'cf_user',
+  /** Sees the Sheet Roundup and nothing else. */
+  AHE_USER = 'ahe_user',
   /**
    * A manager with no section, left over from before sections existed. Not
    * assignable any more; as a `@MinRole` it still means "any manager".

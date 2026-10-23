@@ -7,7 +7,7 @@ import { YpPiece } from '../yahoo-production/entities/yp-piece.entity';
 import * as ypStages from '../yahoo-production/stages';
 import { activeDayCount, perDay } from '../production/analytics';
 import { buildNameResolver } from '../production/name-resolver';
-import { normalizeTitleKey, toDateOnly } from '../production/normalization';
+import { clean, normalizeTitleKey, toDateOnly } from '../production/normalization';
 import { opsDayOf, shiftDate } from '../production/time';
 import { ResPerson } from './entities/res-person.entity';
 import { FLOAT_POOLS, canonicalDivision } from './divisions';
@@ -51,15 +51,47 @@ export interface CombinedProductionResult {
   };
 }
 
+/** Articles written, edited and published in a range. */
+export interface RoundupCounts {
+  written: number;
+  edited: number;
+  published: number;
+}
+
+export interface SheetRoundupResult {
+  startDate: string | null;
+  endDate: string | null;
+  total: RoundupCounts;
+  yahoo: RoundupSide;
+  nonYahoo: RoundupSide;
+  days: { date: string; yahoo: RoundupCounts; nonYahoo: RoundupCounts }[];
+  notes: {
+    /** CF-sheet pieces with activity in the range that the Yahoo sheet also tracks, so counted under Yahoo. */
+    sharedWithYahoo: number;
+    /** Pieces with no stamp to place them on any day, so outside every range. */
+    undated: number;
+  };
+}
+
+export interface RoundupSide {
+  totals: RoundupCounts;
+  /** One row per source sheet; for Yahoo, one per division on its single sheet. */
+  sheets: ({ sheet: string } & RoundupCounts)[];
+}
+
 interface Piece {
   yahoo: boolean;
   division: string;
+  /** The Yahoo sheet's own Division cell; the CF sheet's division otherwise. */
+  sheet: string;
   writer: string;
   editor: string;
   submittedDay: string | null;
   publishedDay: string | null;
   /** When the credited editor's pass ended — the day they worked on it. */
   editedAt: Date | null;
+  /** Desk day of the last editorial pass, or null when it was never edited. */
+  editedDay: string | null;
   sentBack: boolean;
   /** Submitted or published, yet nothing places it on a day. */
   undated: boolean;
@@ -69,6 +101,23 @@ interface Piece {
 const MIN_TITLE_KEY = 20;
 
 const split = (): Split => ({ yahoo: 0, nonYahoo: 0, total: 0 });
+const counts = (): RoundupCounts => ({ written: 0, edited: 0, published: 0 });
+
+/**
+ * The day a piece's editing counts on: its last pass, so a send-back is one
+ * article edited, not two. An edit that ended in a scrap or a hold is not
+ * counted; a piece that went live without an editor stamp falls back to its
+ * publication date.
+ */
+function editedDayOf(
+  lastPass: Date | null | undefined,
+  outcome: { verified: boolean; published: boolean; killed: boolean; onHold: boolean },
+  publishedDay: string | null,
+): string | null {
+  if (!outcome.published && (outcome.killed || outcome.onHold)) return null;
+  if (lastPass) return opsDayOf(lastPass);
+  return outcome.verified ? publishedDay : null;
+}
 const add = (s: Split, yahoo: boolean) => {
   if (yahoo) s.yahoo++;
   else s.nonYahoo++;
@@ -104,34 +153,26 @@ export class CombinedProductionService {
     @InjectRepository(ResPerson) private readonly peopleRepo: Repository<ResPerson>,
   ) {}
 
-  async get(params: {
-    startDate?: string;
-    endDate?: string;
-    divisions?: string[];
-  }): Promise<CombinedProductionResult> {
-    const [cf, yp, people] = await Promise.all([
-      this.cfRepo.find(),
-      this.ypRepo.find(),
-      this.peopleRepo.find(),
-    ]);
+  /**
+   * Every piece on both sheets, each article once. CF rows the Yahoo sheet also
+   * tracks come back separately as `twins` and are left out of `pieces`.
+   */
+  private async loadPieces(): Promise<{ pieces: Piece[]; twins: Piece[] }> {
+    const [cf, yp] = await Promise.all([this.cfRepo.find(), this.ypRepo.find()]);
 
     const pieces: Piece[] = [];
+    const twins: Piece[] = [];
     const yahooByTitle = new Map<string, YpPiece>();
     for (const y of yp) {
       const key = normalizeTitleKey(y.title);
       if (key.length >= MIN_TITLE_KEY && !yahooByTitle.has(key)) yahooByTitle.set(key, y);
     }
 
-    let sharedWithYahoo = 0;
     const cfTwinWriter = new Map<YpPiece, string>();
     for (const p of cf) {
       const key = normalizeTitleKey(p.title);
       const twin = key.length >= MIN_TITLE_KEY ? yahooByTitle.get(key) : undefined;
-      if (twin) {
-        sharedWithYahoo++;
-        if (known(p.writer)) cfTwinWriter.set(twin, p.writer);
-        continue;
-      }
+      if (twin && known(p.writer)) cfTwinWriter.set(twin, p.writer);
       const stamp = p.submittedAt || p.editorAt;
       const published = cfStages.isPublished(p);
       const submittedDay = cfStages.isSubmitted(p) ? (stamp ? opsDayOf(stamp) : p.date) : null;
@@ -139,15 +180,26 @@ export class CombinedProductionService {
         ? p.publishedDate ?? toDateOnly(p.liveAt ?? p.editorAt2 ?? p.editorAt ?? null)
         : null;
       const secondPass = !!known(p.editor2);
-      pieces.push({
+      (twin ? twins : pieces).push({
         yahoo: false,
         division: p.division,
+        sheet: p.division,
         writer: known(p.writer),
         // The pass that cleared the piece: the second editor after a send-back.
         editor: known(p.editor2) || known(p.editor),
         submittedDay,
         publishedDay,
         editedAt: (secondPass ? p.editorAt2 ?? p.editorAt : p.editorAt) ?? null,
+        editedDay: editedDayOf(
+          p.editorAt2 ?? p.editorAt,
+          {
+            verified: cfStages.isVerified(p),
+            published,
+            killed: cfStages.isKilled(p),
+            onHold: cfStages.isOnHold(p),
+          },
+          publishedDay,
+        ),
         sentBack: cfStages.isSentBack(p),
         undated: (cfStages.isSubmitted(p) && !submittedDay) || (published && !publishedDay),
       });
@@ -161,15 +213,37 @@ export class CombinedProductionService {
       pieces.push({
         yahoo: true,
         division: canonicalDivision(y.division).division,
+        sheet: clean(y.division) || 'Unknown',
         writer: known(y.writer) || cfTwinWriter.get(y) || '',
         editor: known(y.editor),
         submittedDay,
         publishedDay,
         editedAt: y.editorAt ?? null,
+        editedDay: editedDayOf(
+          y.editorAt,
+          {
+            verified: ypStages.isVerified(y),
+            published,
+            killed: ypStages.isKilled(y),
+            onHold: ypStages.isOnHold(y),
+          },
+          publishedDay,
+        ),
         sentBack: false,
         undated: (ypStages.isSubmitted(y) && !submittedDay) || (published && !publishedDay),
       });
     }
+
+    return { pieces, twins };
+  }
+
+  async get(params: {
+    startDate?: string;
+    endDate?: string;
+    divisions?: string[];
+  }): Promise<CombinedProductionResult> {
+    const [{ pieces, twins }, people] = await Promise.all([this.loadPieces(), this.peopleRepo.find()]);
+    const sharedWithYahoo = twins.length;
 
     const resolve = buildNameResolver(
       people.flatMap((s) => [
@@ -296,6 +370,80 @@ export class CombinedProductionService {
         .map(([division, d]) => ({ division, ...d }))
         .sort((a, b) => b.published.total - a.published.total || a.division.localeCompare(b.division)),
       notes: { sharedWithYahoo, undated },
+    };
+  }
+
+  /**
+   * Written, edited and published per source sheet, Yahoo and Non-Yahoo apart,
+   * on the same rules as `get()`: written is submitted, by desk day; published
+   * by each sheet's publication date; edited on the desk day of the last pass.
+   * Every sheet that has ever synced gets a row, so a quiet one reads 0.
+   */
+  async roundup(params: { startDate?: string; endDate?: string }): Promise<SheetRoundupResult> {
+    const { pieces, twins } = await this.loadPieces();
+    const inRange = (day: string | null) =>
+      !!day &&
+      (!params.startDate || day >= params.startDate) &&
+      (!params.endDate || day <= params.endDate);
+
+    const total = counts();
+    const sides = { yahoo: new Map<string, RoundupCounts>(), nonYahoo: new Map<string, RoundupCounts>() };
+    const sideTotals = { yahoo: counts(), nonYahoo: counts() };
+    const byDay = new Map<string, { yahoo: RoundupCounts; nonYahoo: RoundupCounts }>();
+    const dayRow = (d: string) => {
+      if (!byDay.has(d)) byDay.set(d, { yahoo: counts(), nonYahoo: counts() });
+      return byDay.get(d)!;
+    };
+    for (const p of twins) {
+      if (!sides.nonYahoo.has(p.sheet)) sides.nonYahoo.set(p.sheet, counts());
+    }
+
+    let undated = 0;
+    for (const p of pieces) {
+      const side = p.yahoo ? 'yahoo' : 'nonYahoo';
+      if (!sides[side].has(p.sheet)) sides[side].set(p.sheet, counts());
+      const sheet = sides[side].get(p.sheet)!;
+      if (p.undated) undated++;
+
+      const tally = (measure: keyof RoundupCounts, day: string | null) => {
+        if (!day || !inRange(day)) return;
+        total[measure]++;
+        sideTotals[side][measure]++;
+        sheet[measure]++;
+        dayRow(day)[side][measure]++;
+      };
+      tally('written', p.submittedDay);
+      tally('edited', p.editedDay);
+      tally('published', p.publishedDay);
+    }
+
+    const days: SheetRoundupResult['days'] = [];
+    if (params.startDate && params.endDate && params.startDate <= params.endDate) {
+      for (let d = params.startDate; d <= params.endDate; d = shiftDate(d, 1)) {
+        days.push({ date: d, ...(byDay.get(d) ?? { yahoo: counts(), nonYahoo: counts() }) });
+      }
+    } else {
+      for (const [date, row] of byDay) days.push({ date, ...row });
+    }
+    days.sort((a, b) => b.date.localeCompare(a.date));
+
+    const sheetRows = (m: Map<string, RoundupCounts>) =>
+      [...m.entries()]
+        .map(([sheet, c]) => ({ sheet, ...c }))
+        .sort((a, b) => b.published - a.published || b.written - a.written || a.sheet.localeCompare(b.sheet));
+
+    return {
+      startDate: params.startDate ?? null,
+      endDate: params.endDate ?? null,
+      total,
+      yahoo: { totals: sideTotals.yahoo, sheets: sheetRows(sides.yahoo) },
+      nonYahoo: { totals: sideTotals.nonYahoo, sheets: sheetRows(sides.nonYahoo) },
+      days,
+      notes: {
+        sharedWithYahoo: twins.filter((p) => inRange(p.submittedDay) || inRange(p.editedDay) || inRange(p.publishedDay))
+          .length,
+        undated,
+      },
     };
   }
 }
