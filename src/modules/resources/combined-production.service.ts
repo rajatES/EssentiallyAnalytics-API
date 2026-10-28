@@ -86,6 +86,9 @@ export interface RoundupSide {
 }
 
 interface Piece {
+  /** Unique across both sheets: the sheet's row ID behind `cf:` or `yp:`. */
+  id: string;
+  title: string;
   yahoo: boolean;
   division: string;
   /** The Yahoo sheet's own Division cell; the CF sheet's division otherwise. */
@@ -103,6 +106,16 @@ interface Piece {
   sentBack: boolean;
   /** Submitted or published, yet nothing places it on a day. */
   undated: boolean;
+}
+
+export interface PublishedArticle {
+  id: string;
+  title: string;
+  yahoo: boolean;
+  division: string;
+  writer: string;
+  editor: string;
+  publishedDay: string;
 }
 
 /** A shared title shorter than this is too generic to prove two rows are one piece. */
@@ -212,6 +225,8 @@ export class CombinedProductionService {
         onHold: cfStages.isOnHold(p),
       };
       (twin ? twins : pieces).push({
+        id: `cf:${p.id}`,
+        title: p.title,
         yahoo: false,
         division: p.division,
         sheet: p.division,
@@ -242,6 +257,8 @@ export class CombinedProductionService {
         onHold: ypStages.isOnHold(y),
       };
       pieces.push({
+        id: `yp:${y.id}`,
+        title: y.title,
         yahoo: true,
         division: canonicalDivision(y.division).division,
         sheet: clean(y.division) || 'Unknown',
@@ -260,15 +277,8 @@ export class CombinedProductionService {
     return { pieces, twins };
   }
 
-  async get(params: {
-    startDate?: string;
-    endDate?: string;
-    divisions?: string[];
-  }): Promise<CombinedProductionResult> {
-    const [{ pieces, twins }, people] = await Promise.all([this.loadPieces(), this.peopleRepo.find()]);
-    const sharedWithYahoo = twins.length;
-
-    const resolve = buildNameResolver(
+  private nameResolver(people: ResPerson[], pieces: Piece[]) {
+    return buildNameResolver(
       people.flatMap((s) => [
         { division: s.primaryDivision, name: s.name, floats: FLOAT_POOLS.has(s.primaryDivision) },
         ...(s.secondaryDivisions || []).map((d) => ({ division: d, name: s.name })),
@@ -280,6 +290,36 @@ export class CombinedProductionService {
         allottedBy: 'Unknown',
       })),
     );
+  }
+
+  /**
+   * Every published article once, CF↔Yahoo twins under Yahoo, with writer and
+   * editor credited exactly as `get()` credits them.
+   */
+  async publishedArticles(): Promise<PublishedArticle[]> {
+    const [{ pieces }, people] = await Promise.all([this.loadPieces(), this.peopleRepo.find()]);
+    const resolve = this.nameResolver(people, pieces);
+    return pieces
+      .filter((p) => p.publishedDay)
+      .map((p) => ({
+        id: p.id,
+        title: p.title,
+        yahoo: p.yahoo,
+        division: p.division,
+        writer: p.writer ? resolve(p.writer, p.division) : NO_WRITER,
+        editor: p.editor ? resolve(p.editor, p.division) : NO_EDITOR,
+        publishedDay: p.publishedDay!,
+      }));
+  }
+
+  async get(params: {
+    startDate?: string;
+    endDate?: string;
+    divisions?: string[];
+  }): Promise<CombinedProductionResult> {
+    const [{ pieces, twins }, people] = await Promise.all([this.loadPieces(), this.peopleRepo.find()]);
+    const sharedWithYahoo = twins.length;
+    const resolve = this.nameResolver(people, pieces);
 
     const wantDivisions = params.divisions?.length
       ? new Set(params.divisions.map((d) => canonicalDivision(d).division))

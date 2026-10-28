@@ -24,6 +24,7 @@ import { ResourcesModule } from './modules/resources/resources.module';
 import { MailModule } from './common/mail/mail.module';
 import { McpSocialModule } from './modules/mcp-social/mcp-social.module';
 import { PageDirectoryModule } from './modules/page-directory/page-directory.module';
+import { OverviewModule } from './modules/overview/overview.module';
 
 @Module({
   imports: [
@@ -76,6 +77,7 @@ import { PageDirectoryModule } from './modules/page-directory/page-directory.mod
     ResourcesModule,
     McpSocialModule,
     PageDirectoryModule,
+    OverviewModule,
   ],
   controllers: [],
   providers: [
