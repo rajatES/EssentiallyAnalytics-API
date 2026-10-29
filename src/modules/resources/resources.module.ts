@@ -3,6 +3,7 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { ResourcesController } from './resources.controller';
 import { CombinedProductionController } from './combined-production.controller';
 import { CombinedProductionService } from './combined-production.service';
+import { BbNewsService } from './bb-news.service';
 import { SheetRoundupController } from './sheet-roundup.controller';
 import { ResourcesService } from './resources.service';
 import { ResourcesSyncService } from './resources-sync.service';
@@ -34,7 +35,7 @@ import { YpDivisionQuota } from '../yahoo-production/entities/yp-division-quota.
     ]),
   ],
   controllers: [ResourcesController, CombinedProductionController, SheetRoundupController],
-  providers: [ResourcesService, ResourcesSyncService, ResourceDirectoryService, CombinedProductionService],
+  providers: [ResourcesService, ResourcesSyncService, ResourceDirectoryService, CombinedProductionService, BbNewsService],
   exports: [ResourceDirectoryService, CombinedProductionService],
 })
 export class ResourcesModule {}

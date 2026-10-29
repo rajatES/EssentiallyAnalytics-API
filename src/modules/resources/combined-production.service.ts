@@ -11,6 +11,7 @@ import { clean, normalizeTitleKey, toDateOnly } from '../production/normalizatio
 import { opsDayOf, shiftDate } from '../production/time';
 import { ResPerson } from './entities/res-person.entity';
 import { FLOAT_POOLS, canonicalDivision } from './divisions';
+import { BbNewsService, type BbNewsPiece } from './bb-news.service';
 
 export interface Split {
   yahoo: number;
@@ -70,6 +71,11 @@ export interface SheetRoundupResult {
     sharedWithYahoo: number;
     /** Pieces with no stamp to place them on any day, so outside every range. */
     undated: number;
+    /**
+     * The BB News workbook, read live rather than synced: when it was last
+     * read, and why the latest read failed. Never read means no BB News row.
+     */
+    bbNews: { readAt: string | null; error: string | null };
   };
 }
 
@@ -161,6 +167,67 @@ const add = (s: Split, yahoo: boolean) => {
 };
 const known = (n: string | null | undefined) => (n && n !== 'Unknown' ? n : '');
 
+export const BB_NEWS = 'BB News';
+
+/**
+ * BB News rows as roundup pieces, on Critical Flow's rules: written on the
+ * desk day of submission (else of allotment), edited on the day of the last
+ * pass. Published on the WordPress live date, or where the sheet has none, on
+ * the day final verification signed it off: the live-time columns stopped
+ * filling on 15 Oct 2026 and were never filled in May, while final
+ * verification runs throughout and matches the live count where both exist.
+ * Rows the Yahoo sheet also tracks are left to it, as CF twins are.
+ */
+function bbNewsPieces(rows: BbNewsPiece[], onYahooSheet: Set<string>, now = new Date()): Piece[] {
+  const out: Piece[] = [];
+  for (const b of rows) {
+    const key = normalizeTitleKey(b.title);
+    if (key.length >= MIN_TITLE_KEY && onYahooSheet.has(key)) continue;
+
+    const statuses = b.passes.map((p) => p.status).filter(Boolean);
+    const latest = statuses[statuses.length - 1] ?? '';
+    const firstPass = b.passes[0]?.at ?? null;
+    const lastPass = [...b.passes].reverse().find((p) => p.at)?.at ?? null;
+    // A scheduled post carries its go-live time before it is live.
+    const scheduled = b.wpStatus === 'scheduled-pending' && (!b.liveAt || b.liveAt > now);
+    const published =
+      !scheduled &&
+      (b.wpStatus === 'publish' ||
+        !!b.liveAt ||
+        !!b.finalVerifiedAt ||
+        statuses.some((s) => s === 'Published' || s === 'PR Published'));
+    const o: Outcome = {
+      submitted: !!b.submittedAt || b.hasStagingLink || statuses.length > 0 || !!lastPass || !!b.editor,
+      verified: published || statuses.some((s) => ['Verified', 'Published', 'PR Published', 'Scheduled'].includes(s)),
+      published,
+      sentBack: statuses.includes('Sent Back') || b.passes.slice(1).some((p) => p.status || p.at),
+      killed: latest === 'Scrapped',
+      onHold: latest === 'On Hold',
+    };
+    const stamp = b.submittedAt || firstPass;
+    const anchorDay = toDateOnly(b.allottedAt || b.submittedAt || firstPass || b.liveAt);
+    const submittedDay = o.submitted ? (stamp ? opsDayOf(stamp) : anchorDay) : null;
+    const publishedDay = published ? toDateOnly(b.liveAt ?? b.finalVerifiedAt ?? lastPass) : null;
+    out.push({
+      id: `bb:${b.ref}`,
+      title: b.title,
+      yahoo: true,
+      division: BB_NEWS,
+      sheet: BB_NEWS,
+      writer: b.writer,
+      editor: b.editor,
+      submittedDay,
+      publishedDay,
+      editedAt: lastPass,
+      editedDay: editedDayOf(lastPass, o, publishedDay),
+      awaitingEditor: awaitingEditor(lastPass, o),
+      sentBack: o.sentBack,
+      undated: (o.submitted && !submittedDay) || (published && !publishedDay),
+    });
+  }
+  return out;
+}
+
 // Pieces the sheet credits to nobody still count toward the totals, so the
 // people tables carry them as a row of their own and always add up — 300
 // September CF publications had no editor named (Golf stopped filling it in).
@@ -187,6 +254,7 @@ export class CombinedProductionService {
     @InjectRepository(CfPiece) private readonly cfRepo: Repository<CfPiece>,
     @InjectRepository(YpPiece) private readonly ypRepo: Repository<YpPiece>,
     @InjectRepository(ResPerson) private readonly peopleRepo: Repository<ResPerson>,
+    private readonly bbNews: BbNewsService,
   ) {}
 
   /**
@@ -442,9 +510,16 @@ export class CombinedProductionService {
    * by each sheet's publication date; edited on the desk day of the last pass.
    * Pending editor is what was written in the range and is still unedited now.
    * Every sheet that has ever synced gets a row, so a quiet one reads 0.
+   *
+   * Yahoo also takes in the BB News workbook, which only the roundup counts;
+   * `get()` and the Combined tab are the two sheets alone.
    */
   async roundup(params: { startDate?: string; endDate?: string }): Promise<SheetRoundupResult> {
-    const { pieces, twins } = await this.loadPieces();
+    const [{ pieces: synced, twins }, bb] = await Promise.all([this.loadPieces(), this.bbNews.read()]);
+    const onYahooSheet = new Set(
+      synced.filter((p) => p.yahoo).map((p) => normalizeTitleKey(p.title)).filter((k) => k.length >= MIN_TITLE_KEY),
+    );
+    const pieces = bb.readAt ? [...synced, ...bbNewsPieces(bb.pieces, onYahooSheet)] : synced;
     const inRange = (day: string | null) =>
       !!day &&
       (!params.startDate || day >= params.startDate) &&
@@ -461,6 +536,7 @@ export class CombinedProductionService {
     for (const p of twins) {
       if (!sides.nonYahoo.has(p.sheet)) sides.nonYahoo.set(p.sheet, sheetCounts());
     }
+    if (bb.readAt) sides.yahoo.set(BB_NEWS, sheetCounts());
 
     let undated = 0;
     for (const p of pieces) {
@@ -511,6 +587,7 @@ export class CombinedProductionService {
         sharedWithYahoo: twins.filter((p) => inRange(p.submittedDay) || inRange(p.editedDay) || inRange(p.publishedDay))
           .length,
         undated,
+        bbNews: { readAt: bb.readAt?.toISOString() ?? null, error: bb.error },
       },
     };
   }

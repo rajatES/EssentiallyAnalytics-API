@@ -118,6 +118,8 @@ const STATUS_ALIASES: Record<string, string> = {
   verifying: 'Verifying',
   'sent back': 'Sent Back',
   sentback: 'Sent Back',
+  sendback: 'Sent Back',
+  'send back': 'Sent Back',
   sb: 'Sent Back',
   scrapped: 'Scrapped',
   scraped: 'Scrapped',
